@@ -307,6 +307,10 @@ func isProjectLocalInstall(self string) bool {
 	if !pnpm && (hasAdjacent(segs, "lib", "node_modules") || hasAdjacent(segs, "npm", "node_modules")) {
 		return false
 	}
+	// pnpm 10's global virtual store (see pnpm_store.go).
+	if isPnpmGlobalStoreInstall(self, segs) {
+		return false
+	}
 	return true
 }
 
@@ -327,6 +331,9 @@ func nudgeFor(self, curlDest string) string {
 	// <AppData>\npm\node_modules (windows).
 	case !pnpm && (hasAdjacent(segs, "lib", "node_modules") || hasAdjacent(segs, "npm", "node_modules")):
 		return nudgeNpmGlobal
+	// pnpm 10's global virtual store (see pnpm_store.go).
+	case isPnpmGlobalStoreInstall(self, segs):
+		return nudgePnpmGlobal
 	}
 	root := nodeProjectRoot(self)
 	if root == "" {

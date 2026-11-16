@@ -113,6 +113,83 @@ function pathSegments(p) {
   return String(p || "").split(/[/\\]/).filter(Boolean);
 }
 
+// isPnpmStoreLinkPath matches pnpm's global virtual store layout:
+// <storeDir>/v<N>/links/... (storeDir defaults to <PNPM_HOME>/store but is
+// configurable, so its name is not matched). Matching is only a hint; the
+// global-link check below is what decides.
+function isPnpmStoreLinkPath(segs) {
+  return segs.some((s, i) => /^v\d+$/.test(s) && segs[i + 1] === "links");
+}
+
+// packageRoot returns the directory of the package that contains p: the path
+// up to and including the package name after the LAST node_modules segment
+// (two segments for a scoped name). Null when p is not inside a package.
+function packageRoot(p) {
+  const norm = String(p || "").replace(/\\/g, "/");
+  const marker = "/node_modules/";
+  const at = norm.lastIndexOf(marker);
+  if (at < 0) return null;
+  const rest = norm.slice(at + marker.length).split("/");
+  const take = rest[0] && rest[0].startsWith("@") ? 2 : 1;
+  if (rest.length < take || !rest[take - 1]) return null;
+  return p.slice(0, at + marker.length + rest.slice(0, take).join("/").length);
+}
+
+// pnpmGlobalDirs lists where pnpm keeps global installs: $PNPM_HOME/global, and
+// the "global" directory beside the store this copy resolved into (the default
+// store is <PNPM_HOME>/store, which covers an unset PNPM_HOME).
+function pnpmGlobalDirs(p) {
+  const dirs = [];
+  if (process.env.PNPM_HOME) dirs.push(path.join(process.env.PNPM_HOME, "global"));
+  const norm = String(p || "").replace(/\\/g, "/");
+  const m = norm.match(/\/v\d+\/links\//);
+  if (m) dirs.push(path.join(path.dirname(p.slice(0, m.index)), "global"));
+  return [...new Set(dirs)];
+}
+
+// linkedFromPnpmGlobal reports whether a pnpm global install links to the
+// package containing p. Global layout: <global>/<v>/<id>/node_modules/<name>.
+// Any filesystem error reads as "not linked" (project-local), the safe side:
+// the CLI then runs its bundled binary, exactly as before this check existed.
+function linkedFromPnpmGlobal(p) {
+  const root = packageRoot(p);
+  if (!root) return false;
+  let rootReal;
+  try {
+    rootReal = fs.realpathSync(root);
+  } catch {
+    return false;
+  }
+  const base = path.basename(root);
+  const scope = path.basename(path.dirname(root));
+  const nameSegs = scope.startsWith("@") ? [scope, base] : [base];
+  for (const g of pnpmGlobalDirs(p)) {
+    let versions;
+    try {
+      versions = fs.readdirSync(g);
+    } catch {
+      continue;
+    }
+    for (const v of versions) {
+      let ids;
+      try {
+        ids = fs.readdirSync(path.join(g, v));
+      } catch {
+        continue;
+      }
+      for (const id of ids) {
+        try {
+          const cand = path.join(g, v, id, "node_modules", ...nameSegs);
+          if (fs.realpathSync(cand) === rootReal) return true;
+        } catch {
+          // Not this one.
+        }
+      }
+    }
+  }
+  return false;
+}
+
 function isGlobalInstall(selfDir) {
   const segs = pathSegments(selfDir === undefined ? __dirname : selfDir);
   if (!segs.includes("node_modules")) {
@@ -126,6 +203,15 @@ function isGlobalInstall(selfDir) {
 
   // pnpm's global prefix, e.g. ~/Library/pnpm/global/5/node_modules/...
   if (pnpm && segs.includes("global")) return true;
+  // pnpm 10's global virtual store. A global install's directory
+  // (~/Library/pnpm/global/v11/<id>/node_modules/@promptster/teams-cli) is a
+  // SYMLINK into ~/Library/pnpm/store/v11/links/..., and Node resolves
+  // __dirname through it, so the "global" segment above never appears. Project
+  // installs can resolve into the same store, so the path alone cannot decide:
+  // it is global only if a pnpm global directory actually links to this copy.
+  if (isPnpmStoreLinkPath(segs)) {
+    return linkedFromPnpmGlobal(selfDir === undefined ? __dirname : selfDir);
+  }
   // npm's global prefix: <prefix>/lib/node_modules (unix) or
   // <AppData>\npm\node_modules (windows).
   if (!pnpm && (adjacent("lib", "node_modules") || adjacent("npm", "node_modules"))) {
