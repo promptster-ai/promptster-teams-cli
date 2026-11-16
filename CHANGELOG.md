@@ -6,6 +6,25 @@ follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.41.4] — 2026-11-16
+
+### Fixed
+
+- Self-update works again. Released builds still looked for updates at
+  `pa-arth/promptster-teams-cli`; after the repository moved to
+  `promptster-ai`, GitHub's redirect for `/releases/latest` stopped landing on a
+  `/releases/tag/` URL and every `update` failed with "unexpected redirect
+  target". This release checks `promptster-ai/promptster-teams-cli` directly.
+- pnpm 10 global installs now get the managed binary at
+  `~/.promptster-teams/bin`. pnpm 10 installs a global package as a symlink
+  into its shared store (`…/pnpm/store/v11/links/…`), so the launcher saw no
+  `global` path segment, treated the install as project-local, and never wrote
+  the managed binary. The Cursor hook and the login item point at that path, so
+  the hook failed on every prompt, edit and shell call. A copy in the store now
+  counts as global only when a pnpm global directory actually links to it, so a
+  project-local install sharing the store is still left alone. The Go updater's
+  project-local check and update hint use the same rule.
+
 ## [0.41.3] — 2026-11-09
 
 ### Fixed
