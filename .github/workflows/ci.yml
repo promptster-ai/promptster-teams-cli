@@ -1,5 +1,10 @@
 name: ci
 
+# On a push to main only `gosec` and `govulncheck` run: they upload SARIF to
+# the Security tab, which tracks main, so they have to see main. Every other
+# job is skipped there (`if: github.event_name != 'push'`): the automerge gate
+# already required it on the PR, and release.yml re-runs build and tests on the
+# tag, so a second full matrix after the squash-merge re-billed the same work.
 on:
   push:
     branches: [main]
@@ -60,6 +65,7 @@ jobs:
   # compiling still catches any windows build breakage.
   test:
     name: build & test (${{ matrix.os }})
+    if: github.event_name != 'push' # see the note above `on:`
     strategy:
       fail-fast: false
       matrix:
@@ -92,6 +98,7 @@ jobs:
   # restart policy armed) is exactly the bug `stop` exists to fix.
   autostart-smoke:
     name: autostart smoke (${{ matrix.os }})
+    if: github.event_name != 'push' # see the note above `on:`
     strategy:
       fail-fast: false
       matrix:
@@ -213,6 +220,7 @@ jobs:
   # C compiler) isn't asked to run -race.
   race:
     name: race & coverage
+    if: github.event_name != 'push' # see the note above `on:`
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -228,6 +236,7 @@ jobs:
 
   lint:
     name: lint (gofmt, vet, staticcheck)
+    if: github.event_name != 'push' # see the note above `on:`
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -275,6 +284,7 @@ jobs:
   # so drift dies at review time instead of release time.
   npm-platforms:
     name: npm platform lists in lockstep
+    if: github.event_name != 'push' # see the note above `on:`
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -380,6 +390,7 @@ jobs:
   # accepting an authentic one and rejecting a tampered or wrong-key one.
   installer-signature:
     name: installer signature verification
+    if: github.event_name != 'push' # see the note above `on:`
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -458,6 +469,7 @@ jobs:
   # instead of appearing as one red line among hundreds.
   progress-migration-cost:
     name: progress-schema migrations declare their replay cost
+    if: github.event_name != 'push' # see the note above `on:`
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -471,6 +483,7 @@ jobs:
   # surface ever creeps back into this source.
   audit-cleanliness:
     name: audit (no surveillance/anti-cheat logic)
+    if: github.event_name != 'push' # see the note above `on:`
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
