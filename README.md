@@ -269,7 +269,9 @@ make release    # cross-compile linux/darwin × amd64/arm64 -> dist/
 
 CI runs cross-platform build/test, the race detector, `gofmt`/`staticcheck`
 lint, `gosec` (SAST) and `govulncheck` (dependency + stdlib CVEs, published to
-the GitHub Security tab), CodeQL, and a gitleaks self-scan. See
+the GitHub Security tab), CodeQL, and a gitleaks self-scan (CodeQL on pull
+requests only when dependencies or workflows change; see
+[docs/repo-hardening.md](docs/repo-hardening.md)). See
 [CONTRIBUTING.md](CONTRIBUTING.md) to run the same checks locally, and
 [SECURITY.md](SECURITY.md) to report a vulnerability.
 
