@@ -10,9 +10,16 @@ project's supply chain and process — not just its code.
   (SARIF → Security tab, gate on HIGH), and the "audit cleanliness" guard that
   fails the build if the sibling hiring product's surveillance/anti-cheat terms
   appear in source.
-- **CodeQL** (`.github/workflows/codeql.yml`), `security-extended` query set.
+- **CodeQL** (`.github/workflows/codeql.yml`), `security-extended` query set,
+  on every push to `main` and weekly. On a pull request it analyzes only when
+  the PR changes `go.mod`/`go.sum`, a workflow or local action, or CodeQL
+  config; other PRs are analyzed by the push to `main` after they merge, so
+  alerts on their code surface there.
 - **Secret scanning of our own source** (`.github/workflows/secret-scan.yml`,
-  gitleaks over full history) — plus GitHub-native secret scanning below.
+  gitleaks): full history on every push to `main` and weekly; on a pull
+  request, the PR's own commits, or full history when it changes
+  `go.mod`/`go.sum`, a workflow, or the gitleaks allowlist — plus GitHub-native
+  secret scanning below.
 - **Dependency CVE scanning** (`govulncheck`) on the latest Go; SARIF →
   Security tab. Non-blocking by design: standard-library findings track the Go
   release cycle and are cleared by a toolchain bump, so they must not wedge
