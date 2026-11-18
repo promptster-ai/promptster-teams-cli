@@ -529,7 +529,7 @@ func checkoutHeadSig(checkout string) (string, bool) {
 	if !strings.HasPrefix(ref, "refs/heads/") || strings.Contains(ref, "..") {
 		return "", false
 	}
-	loose, err := os.ReadFile(filepath.Join(common, filepath.FromSlash(ref))) // #nosec G304 -- a branch ref under the checkout's own git dir; read locally, never emitted.
+	loose, err := os.ReadFile(filepath.Join(common, filepath.FromSlash(ref))) // #nosec G304 G703 -- a branch ref (refs/heads/, no "..") under the checkout's own git dir; read locally, never emitted.
 	if err == nil {
 		tip := strings.TrimSpace(string(loose))
 		return tip, isFullObjectName(tip) // a symbolic ("ref: ...") branch is not vouched for
@@ -579,7 +579,7 @@ func checkoutGitDirs(checkout string) (gitdir, common string, ok bool) {
 	}
 	// The common dir is what git itself reads from <gitdir>/commondir. No such
 	// file means a submodule or a separate git dir, which is not vouched for.
-	cd, err := os.ReadFile(filepath.Join(gitdir, "commondir")) // #nosec G304 -- the checkout's own git dir; read locally, never emitted.
+	cd, err := os.ReadFile(filepath.Join(gitdir, "commondir")) // #nosec G304 G703 -- the checkout's own git dir; read locally, never emitted.
 	if err != nil {
 		return "", "", false
 	}
