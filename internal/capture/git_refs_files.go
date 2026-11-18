@@ -12,7 +12,7 @@ import (
 //
 // git-watch asks four ref questions of every polled root, every poll: HEAD's
 // commit (gitHead), HEAD's branch (gitSymbolicRef "HEAD"), the default branch's
-// tip (durabilityDefaultTip), and every branch and remote tip (gitRefTips). Each
+// tip (durabilityDefaultTip), and every branch and remote tip (pollOffHeadCommits). Each
 // was its own `git` process, so ~4 spawns per root per minute: on one laptop
 // with ~105 live roots, ~420 processes a minute to learn what a few small files
 // already say. checkoutHeadSig (the sibling-lineage memo key) reads the same way.
@@ -167,21 +167,33 @@ func (r fileRefs) target(name string) (sha, symbolic string, exists, ok bool) {
 // resolve follows name to a commit sha. exists=false (with ok) means the ref,
 // or the end of its symbolic chain, was not found.
 func (r fileRefs) resolve(name string) (sha string, exists, ok bool) {
+	_, sha, exists, ok = r.follow(name)
+	return sha, exists, ok
+}
+
+// follow walks name's symbolic chain to its end, as `git symbolic-ref` does by
+// default: final is the last ref reached (one that holds a sha, or does not
+// exist), sha its commit when it exists.
+func (r fileRefs) follow(name string) (final, sha string, exists, ok bool) {
 	for range maxSymrefDepth {
 		s, to, ex, k := r.target(name)
-		if !k || !ex {
-			return "", false, k
+		if !k {
+			return "", "", false, false
+		}
+		if !ex {
+			return name, "", false, true
 		}
 		if to == "" {
-			return s, true, true
+			return name, s, true, true
 		}
 		name = to
 	}
-	return "", false, false
+	return "", "", false, false
 }
 
-// head returns HEAD's branch (empty when detached) and the commit it resolves
-// to (empty when the branch was not found: unborn, or mid-update).
+// head returns HEAD's branch, the end of its symbolic chain (empty when
+// detached), and the commit it resolves to (empty when the branch was not
+// found: unborn, or mid-update).
 func (r fileRefs) head() (branch, sha string, ok bool) {
 	data, err := os.ReadFile(filepath.Join(r.gitdir, "HEAD")) // #nosec G304 G703 -- the checkout's own HEAD file; read locally, never emitted.
 	if err != nil {
@@ -191,7 +203,9 @@ func (r fileRefs) head() (branch, sha string, ok bool) {
 	if !ok || branch == "" {
 		return "", sha, ok
 	}
-	sha, exists, ok := r.resolve(branch)
+	// The branch is where the chain ends, as `git symbolic-ref HEAD` reports it
+	// (HEAD -> refs/heads/alias -> refs/heads/main names main).
+	branch, sha, exists, ok := r.follow(branch)
 	if !ok {
 		return "", "", false
 	}
@@ -208,6 +222,13 @@ func (r fileRefs) head() (branch, sha string, ok bool) {
 func (r fileRefs) tips() ([]string, bool) {
 	values := map[string]string{}   // loose ref -> sha
 	symbolic := map[string]string{} // loose symbolic ref -> target name
+	// Files are opened through an os.Root scoped to the common dir, so a symlink
+	// swapped in mid-walk cannot lead a read outside the repository.
+	root, err := os.OpenRoot(r.common)
+	if err != nil {
+		return nil, false
+	}
+	defer root.Close()
 	for _, top := range []string{"heads", "remotes"} {
 		base := filepath.Join(r.common, "refs", top)
 		err := filepath.WalkDir(base, func(p string, d fs.DirEntry, err error) error {
@@ -228,7 +249,7 @@ func (r fileRefs) tips() ([]string, bool) {
 			if !fileRefName(name) {
 				return nil // git ignores a ref with a broken name, or an update's .lock
 			}
-			data, err := os.ReadFile(p) // #nosec G304 G703 -- a loose ref under the repository's own refs/; read locally, never emitted.
+			data, err := root.ReadFile(rel)
 			if errors.Is(err, fs.ErrNotExist) {
 				return nil // packed or deleted mid-walk; packed-refs is read after
 			}

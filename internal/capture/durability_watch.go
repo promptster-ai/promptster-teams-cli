@@ -40,7 +40,13 @@ func gitSymbolicRef(root, name string) string {
 				return branch // "" when detached, as symbolic-ref --quiet says
 			}
 		} else if _, to, exists, ok := r.target(name); ok && exists {
-			return to // "" when the ref holds a sha, not a name
+			if to == "" {
+				return "" // the ref holds a sha, not a name
+			}
+			// symbolic-ref follows a chain to its end by default.
+			if final, _, _, ok := r.follow(to); ok {
+				return final
+			}
 		}
 		// Not found from files (no remote HEAD, or mid-update): git decides.
 	}

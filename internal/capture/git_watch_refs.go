@@ -98,20 +98,10 @@ func saveRefTips(next map[string][]string) {
 	})
 }
 
-// gitRefTips reads root's common git dir, its HEAD, and the sorted, deduped tips
-// of every local branch and remote-tracking ref: from the repository's files
-// when they answer (git_refs_files.go), else in one spawn.
-func gitRefTips(root string) (commonDir, head string, tips []string, ok bool) {
-	if r, ok := openFileRefs(root); ok {
-		if commonDir, head, tips, ok := refTipsFromFiles(r); ok {
-			return commonDir, head, tips, true
-		}
-	}
-	return gitRefTipsSpawn(root)
-}
-
-// refTipsFromFiles is gitRefTips answered from files. ok=false on an unborn HEAD
-// or a ref mid-update too: git gives the final answer for those.
+// refTipsFromFiles reads root's common git dir, its HEAD, and the sorted, deduped
+// tips of every local branch and remote-tracking ref from the repository's
+// files (git_refs_files.go). ok=false on an unborn HEAD or a ref mid-update
+// too: gitRefTipsSpawn gives the final answer for those.
 func refTipsFromFiles(r fileRefs) (commonDir, head string, tips []string, ok bool) {
 	_, sha, headOK := r.head()
 	all, tipsOK := r.tips()
@@ -122,7 +112,7 @@ func refTipsFromFiles(r fileRefs) (commonDir, head string, tips []string, ok boo
 	return r.common, sha, slices.Compact(all), true
 }
 
-// gitRefTipsSpawn is gitRefTips in one spawn.
+// gitRefTipsSpawn is refTipsFromFiles' question asked of git, in one spawn.
 func gitRefTipsSpawn(root string) (commonDir, head string, tips []string, ok bool) {
 	// #nosec G204 -- constant argv; root is a discovered checkout. Read-only.
 	out, err := exec.Command("git", "-C", root, "rev-parse", "--git-common-dir", "HEAD", "--branches", "--remotes").Output()
