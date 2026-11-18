@@ -404,19 +404,21 @@ func commitsHeldBy(checkout string, shas []string) map[string]bool {
 	if len(full) == 0 {
 		return map[string]bool{}
 	}
-	headSig, ok := checkoutHeadSig(checkout)
+	tip, ok := checkoutHeadSig(checkout)
 	if !ok {
-		return readCommitsHeldBy(checkout, full)
+		return readCommitsHeldBy(checkout, full, "HEAD")
 	}
-	known, missing := heldMemo.lookup(checkout, headSig, full)
+	known, missing := heldMemo.lookup(checkout, tip, full)
 	if len(missing) == 0 {
 		return known
 	}
-	read := readCommitsHeldBy(checkout, missing)
+	// Read against `tip`, never the live HEAD: the answer is stored under tip,
+	// so it must be about tip even if HEAD moves while git runs.
+	read := readCommitsHeldBy(checkout, missing, tip)
 	if read == nil {
 		return nil // a failed read holds nothing, exactly as before; not remembered
 	}
-	heldMemo.store(checkout, headSig, missing, read)
+	heldMemo.store(checkout, tip, missing, read)
 	for sha := range read {
 		known[sha] = true
 	}
@@ -503,15 +505,32 @@ func (m *heldMemoT) store(checkout, headSig string, asked []string, read map[str
 // files alone: HEAD's own content when detached, else the branch tip from the
 // loose ref file or, when the branch is packed, its line in packed-refs. These
 // are contents, not timestamps, so two moves within one clock tick still give
-// different answers. ok=false for anything it cannot resolve exactly (a reftable
-// repository, a ref that is itself symbolic, a per-worktree ref, an unusual
-// .git layout); the caller then asks git without the memo.
+// different answers. The returned sig IS that commit's full sha, and
+// commitsHeldBy reads git against it, so an answer always describes its key.
+// ok=false for anything it cannot resolve exactly (a reftable repository, a ref
+// that is itself symbolic, a per-worktree ref, an unusual .git layout) or whose
+// ancestry can change without HEAD moving (a shallow clone, grafts, replace
+// refs); the caller then asks git without the memo.
 func checkoutHeadSig(checkout string) (string, bool) {
 	gitdir, common, ok := checkoutGitDirs(checkout)
 	if !ok {
 		return "", false
 	}
 	if _, err := os.Stat(filepath.Join(common, "reftable")); err == nil {
+		return "", false
+	}
+	// Ancestry can also change while HEAD stays put: deepening a shallow clone,
+	// grafts, or `git replace`. Such repositories are not memoized at all.
+	for _, p := range []string{"shallow", filepath.Join("info", "grafts")} {
+		if _, err := os.Stat(filepath.Join(common, p)); err == nil {
+			return "", false
+		}
+	}
+	if replaced, err := os.ReadDir(filepath.Join(common, "refs", "replace")); err == nil && len(replaced) > 0 {
+		return "", false
+	}
+	packed, packedErr := os.ReadFile(filepath.Join(common, "packed-refs")) // #nosec G304 G703 -- the repository's own packed-refs; read locally, never emitted.
+	if packedErr == nil && strings.Contains(string(packed), " refs/replace/") {
 		return "", false
 	}
 	head, err := os.ReadFile(filepath.Join(gitdir, "HEAD")) // #nosec G304 -- the checkout's own HEAD file; read locally, never emitted.
@@ -537,8 +556,7 @@ func checkoutHeadSig(checkout string) (string, bool) {
 	if !errors.Is(err, fs.ErrNotExist) {
 		return "", false
 	}
-	packed, err := os.ReadFile(filepath.Join(common, "packed-refs")) // #nosec G304 -- the repository's own packed-refs; read locally, never emitted.
-	if err != nil {
+	if packedErr != nil {
 		return "", false
 	}
 	for _, line := range strings.Split(string(packed), "\n") {
@@ -593,11 +611,13 @@ func checkoutGitDirs(checkout string) (gitdir, common string, ok bool) {
 	return gitdir, filepath.Clean(common), true
 }
 
-func readCommitsHeldBy(checkout string, shas []string) map[string]bool {
+// readCommitsHeldBy is the git read behind commitsHeldBy: which of shas are
+// ancestors-or-self of `tip` ("HEAD", or the exact commit a memo key names).
+func readCommitsHeldBy(checkout string, shas []string, tip string) map[string]bool {
 	args := make([]string, 0, len(shas)+5)
 	args = append(args, "-C", checkout, "rev-list")
 	args = append(args, shas...)
-	args = append(args, "--not", "HEAD")
+	args = append(args, "--not", tip)
 	// #nosec G204 -- constant flags; checkout is a worktree of a repo this install already polls and the revs are git object names read from that same repo, not attacker input. Read-only: it walks history and prints object names.
 	out, err := exec.Command("git", args...).Output()
 	if err != nil {
