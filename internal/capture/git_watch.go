@@ -337,11 +337,15 @@ func ledgerLookup[T any](s ledgerScope, m map[string]T, committedRel string) (T,
 // interval, landing exactly on the bursts (cold start, adoption replay, a large
 // pull) the recovery paths exist for.
 //
-// ASKED ONCE PER SIBLING PER POLL, over the whole range being processed, then
-// answered from memory: ONE `git rev-list` per sibling per commit loop. A poll
-// spends 2N reads per root with N siblings (the attribution loop and the
-// durability loop each build one), plus one per cold-start replay, and that number
+// ASKED ONCE PER SIBLING, over the whole range being processed, then answered
+// from memory. The range is read with ONE `git rev-list` per sibling, and only
+// for the shas heldMemo cannot already answer (see commitsHeldBy). The number
 // does NOT grow with the number of commits.
+//
+// ACROSS ROOTS the same question repeats: every worktree of one repo has the
+// same siblings and, on the default branch, the same commits. Unmemoized, N
+// roots asked N x (N-1) identical reads per loop: on a 62-worktree repo, 3,782
+// `git rev-list` spawns on one cold-start poll (~95 s of subprocess time).
 //
 // The zero value answers false for everything. That is deliberate: a caller with
 // no lineage in hand gets the polled checkout's own evidence and nothing else.
@@ -360,6 +364,12 @@ func newSiblingLineage(root string, shas []string) siblingLineage {
 	}
 	lin := siblingLineage{reach: make(map[string]map[string]bool, len(siblings))}
 	for _, sibling := range siblings {
+		// A deleted worktree is still listed (prunable) until pruned. Its read
+		// can only fail, and a failed read holds nothing, so skip the spawn.
+		if rootGone(sibling) {
+			heldMemo.forget(sibling)
+			continue
+		}
 		lin.reach[sibling] = commitsHeldBy(sibling, shas)
 	}
 	return lin
@@ -374,19 +384,216 @@ func (l siblingLineage) reaches(checkout, sha string) bool {
 }
 
 // commitsHeldBy returns the subset of shas that are ancestors-or-self of
-// `checkout`'s HEAD, in ONE read.
+// `checkout`'s HEAD.
 //
-// `git rev-list <shas...> --not HEAD` lists what is reachable from the shas and
-// NOT from HEAD, so a sha absent from that output is one HEAD holds. The
-// interpretation is inverted from the output, so every way of being wrong is
-// handled explicitly rather than defaulting to "held":
+// Answers come from heldMemo when it can vouch for them, and the rest from ONE
+// `git rev-list` read (readCommitsHeldBy). The memo is keyed by the commit
+// checkout's HEAD resolves to (checkoutHeadSig), so a remembered answer is
+// exactly what git would print now. Layouts it cannot resolve from files skip
+// the memo and read git every time, as before.
 //
-//   - a failed read (git missing, no HEAD, an object the checkout cannot see)
-//     returns nil, so that sibling holds nothing and its evidence is dropped;
-//   - a sha that is not a full object name is never entered in the result, since
-//     rev-list prints full names and a short one could not match the output it
-//     must be compared against.
+// Only full object names are asked about, on either path: rev-list prints full
+// names, so a short one could never match its output and is never held.
 func commitsHeldBy(checkout string, shas []string) map[string]bool {
+	full := make([]string, 0, len(shas))
+	for _, sha := range shas {
+		if isFullObjectName(sha) {
+			full = append(full, sha)
+		}
+	}
+	if len(full) == 0 {
+		return map[string]bool{}
+	}
+	headSig, ok := checkoutHeadSig(checkout)
+	if !ok {
+		return readCommitsHeldBy(checkout, full)
+	}
+	known, missing := heldMemo.lookup(checkout, headSig, full)
+	if len(missing) == 0 {
+		return known
+	}
+	read := readCommitsHeldBy(checkout, missing)
+	if read == nil {
+		return nil // a failed read holds nothing, exactly as before; not remembered
+	}
+	heldMemo.store(checkout, headSig, missing, read)
+	for sha := range read {
+		known[sha] = true
+	}
+	return known
+}
+
+// heldMemo remembers, per checkout, which shas its HEAD holds, keyed by a
+// signature of that HEAD (checkoutHeadSig). "Is this commit an ancestor of that
+// HEAD" can never change while the HEAD is the same, so an answer is reused
+// across roots and polls for as long as the signature matches, and dropped the
+// moment the checkout commits, resets, switches branch or pulls.
+var heldMemo = &heldMemoT{byCheckout: map[string]heldMemoEntry{}}
+
+type heldMemoT struct {
+	mu         sync.Mutex
+	byCheckout map[string]heldMemoEntry
+}
+
+// forget drops a checkout's answers (newSiblingLineage calls it for a deleted
+// worktree, so agent worktrees that come and go do not accumulate).
+func (m *heldMemoT) forget(checkout string) {
+	m.mu.Lock()
+	delete(m.byCheckout, checkout)
+	m.mu.Unlock()
+}
+
+type heldMemoEntry struct {
+	headSig string
+	held    map[string]bool // sha -> held; only full object names are stored
+}
+
+// heldMemoMaxShas bounds one checkout's entry, and heldMemoMaxCheckouts the
+// number of entries. Reaching either starts over, which only costs re-reads. A
+// poll asks about at most gitWatchMaxCommitsPerPollTotal (200) commits per loop,
+// so two loops' ranges fit in one entry many times over and do not evict each
+// other.
+const (
+	heldMemoMaxShas      = 4096
+	heldMemoMaxCheckouts = 1024
+)
+
+// lookup returns the held subset of shas it can answer, and the shas it cannot.
+// shas are full object names (commitsHeldBy filters them).
+func (m *heldMemoT) lookup(checkout, headSig string, shas []string) (known map[string]bool, missing []string) {
+	known = make(map[string]bool, len(shas))
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	e, ok := m.byCheckout[checkout]
+	if ok && e.headSig != headSig {
+		delete(m.byCheckout, checkout)
+		ok = false
+	}
+	for _, sha := range shas {
+		held, answered := e.held[sha]
+		switch {
+		case !ok || !answered:
+			missing = append(missing, sha)
+		case held:
+			known[sha] = true
+		}
+	}
+	return known, missing
+}
+
+// store records the answers for the shas just read: held per `read`, every
+// other full object name not held.
+func (m *heldMemoT) store(checkout, headSig string, asked []string, read map[string]bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	e, ok := m.byCheckout[checkout]
+	if !ok || e.headSig != headSig || len(e.held)+len(asked) > heldMemoMaxShas {
+		e = heldMemoEntry{headSig: headSig, held: map[string]bool{}}
+	}
+	if !ok && len(m.byCheckout) >= heldMemoMaxCheckouts {
+		m.byCheckout = map[string]heldMemoEntry{}
+	}
+	for _, sha := range asked {
+		e.held[sha] = read[sha]
+	}
+	m.byCheckout[checkout] = e
+}
+
+// checkoutHeadSig returns the commit checkout's HEAD points at, resolved from
+// files alone: HEAD's own content when detached, else the branch tip from the
+// loose ref file or, when the branch is packed, its line in packed-refs. These
+// are contents, not timestamps, so two moves within one clock tick still give
+// different answers. ok=false for anything it cannot resolve exactly (a reftable
+// repository, a ref that is itself symbolic, a per-worktree ref, an unusual
+// .git layout); the caller then asks git without the memo.
+func checkoutHeadSig(checkout string) (string, bool) {
+	gitdir, common, ok := checkoutGitDirs(checkout)
+	if !ok {
+		return "", false
+	}
+	if _, err := os.Stat(filepath.Join(common, "reftable")); err == nil {
+		return "", false
+	}
+	head, err := os.ReadFile(filepath.Join(gitdir, "HEAD")) // #nosec G304 -- the checkout's own HEAD file; read locally, never emitted.
+	if err != nil {
+		return "", false
+	}
+	h := strings.TrimSpace(string(head))
+	ref, symbolic := strings.CutPrefix(h, "ref: ")
+	if !symbolic {
+		return h, isFullObjectName(h)
+	}
+	ref = strings.TrimSpace(ref)
+	// Only a branch: its tip lives in the common dir. Per-worktree refs
+	// (refs/worktree/, refs/bisect/) live in gitdir and are not vouched for.
+	if !strings.HasPrefix(ref, "refs/heads/") || strings.Contains(ref, "..") {
+		return "", false
+	}
+	loose, err := os.ReadFile(filepath.Join(common, filepath.FromSlash(ref))) // #nosec G304 -- a branch ref under the checkout's own git dir; read locally, never emitted.
+	if err == nil {
+		tip := strings.TrimSpace(string(loose))
+		return tip, isFullObjectName(tip) // a symbolic ("ref: ...") branch is not vouched for
+	}
+	if !errors.Is(err, fs.ErrNotExist) {
+		return "", false
+	}
+	packed, err := os.ReadFile(filepath.Join(common, "packed-refs")) // #nosec G304 -- the repository's own packed-refs; read locally, never emitted.
+	if err != nil {
+		return "", false
+	}
+	for _, line := range strings.Split(string(packed), "\n") {
+		if tip, name, found := strings.Cut(strings.TrimSpace(line), " "); found && name == ref && isFullObjectName(tip) {
+			return tip, true
+		}
+	}
+	return "", false // an unborn branch, or one git can see and we cannot
+}
+
+// checkoutGitDirs returns checkout's own git dir and its repository's common
+// dir. A main checkout's .git directory is both. A linked worktree's .git file
+// points at <common>/worktrees/<name>. Any other layout (a submodule, a
+// separate git dir) is ok=false.
+func checkoutGitDirs(checkout string) (gitdir, common string, ok bool) {
+	if checkout == "" {
+		return "", "", false
+	}
+	dotGit := filepath.Join(checkout, ".git")
+	info, err := os.Stat(dotGit)
+	if err != nil {
+		return "", "", false
+	}
+	if info.IsDir() {
+		return dotGit, dotGit, true
+	}
+	data, err := os.ReadFile(dotGit) // #nosec G304 -- the checkout's own .git file, read to find its git dir; never emitted.
+	if err != nil {
+		return "", "", false
+	}
+	gitdir, found := strings.CutPrefix(strings.TrimSpace(string(data)), "gitdir:")
+	if !found {
+		return "", "", false
+	}
+	gitdir = strings.TrimSpace(gitdir)
+	if !filepath.IsAbs(gitdir) {
+		gitdir = filepath.Join(checkout, gitdir)
+	}
+	// The common dir is what git itself reads from <gitdir>/commondir. No such
+	// file means a submodule or a separate git dir, which is not vouched for.
+	cd, err := os.ReadFile(filepath.Join(gitdir, "commondir")) // #nosec G304 -- the checkout's own git dir; read locally, never emitted.
+	if err != nil {
+		return "", "", false
+	}
+	common = strings.TrimSpace(string(cd))
+	if common == "" {
+		return "", "", false
+	}
+	if !filepath.IsAbs(common) {
+		common = filepath.Join(gitdir, common)
+	}
+	return gitdir, filepath.Clean(common), true
+}
+
+func readCommitsHeldBy(checkout string, shas []string) map[string]bool {
 	args := make([]string, 0, len(shas)+5)
 	args = append(args, "-C", checkout, "rev-list")
 	args = append(args, shas...)
@@ -1684,8 +1891,8 @@ func pollGitWatchWorkspace(session Session) {
 
 		// Which of this repository's OTHER checkouts hold these commits, asked once
 		// per sibling for the whole range rather than once per commit per consumer —
-		// one `git rev-list` per sibling, and nothing at all for a repo that has no
-		// linked worktrees. Every consumer below gates a sibling's AI-path evidence
+		// at most one `git rev-list` per sibling (none for answers heldMemo already
+		// has), and nothing at all for a repo that has no linked worktrees. Every consumer below gates a sibling's AI-path evidence
 		// on it (see siblingLineage and resolveLedgerScope).
 		lineage := newSiblingLineage(root, commits)
 		if len(commits) == 0 {
