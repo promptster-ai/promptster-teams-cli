@@ -23,6 +23,12 @@ follows [Semantic Versioning](https://semver.org/).
   a 62-worktree repo, about 95 seconds of git). Each worktree's answer is now
   remembered until its HEAD moves, so a new commit costs about one read per
   worktree. Deleted worktrees that git still lists are skipped.
+- The watcher no longer runs `git worktree list` about twice a second. Each
+  transcript watcher asked for every capture root's worktrees every 3 seconds,
+  and git-watch asked once per worktree of each repo every poll (252 times a
+  poll on one laptop), always getting the same list. The list is now kept per
+  repository and reread only when a worktree is added, removed, moved or
+  repaired.
 
 ## [0.41.4] — 2026-11-16
 
