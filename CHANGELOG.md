@@ -6,6 +6,8 @@ follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.41.5] — 2026-11-18
+
 ### Fixed
 
 - git-watch no longer starts four git processes per repo every minute just to
@@ -14,7 +16,6 @@ follows [Semantic Versioning](https://semver.org/).
   packed-refs). Anything those files cannot answer exactly, such as a reftable
   repository or an unusual layout, still asks git. On one laptop with about 105
   polled repos that is about 420 fewer processes a minute.
-
 - The background watcher uses much less battery when old worktrees have piled
   up. git-watch kept polling a repo for 45 days after its last activity even
   when its directory was gone (a deleted worktree, a temporary clone), and each
