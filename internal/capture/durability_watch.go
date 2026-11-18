@@ -185,8 +185,9 @@ func pollDurability(session Session, roots []string, nowMs int64) {
 				continue // inconclusive — keep the cursor, retry next poll
 			}
 			if len(commits) > 0 {
-				// One reachability read per sibling worktree for the WHOLE range,
-				// before the loop — never one per commit. See newSiblingLineage.
+				// At most one reachability read per sibling worktree for the WHOLE
+				// range, before the loop — never one per commit. See
+				// newSiblingLineage and heldMemo.
 				lineage := newSiblingLineage(root, commits)
 				// Each pollDurabilityCommit advances the cursor to its own commit in
 				// the SAME ledger transaction as that commit's range changes, so a

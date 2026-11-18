@@ -17,6 +17,12 @@ follows [Semantic Versioning](https://semver.org/).
 - A commit queued for line-origin analysis whose checkout was then deleted is
   dropped instead of retried. Each one was retried every second forever, running
   git in a directory that no longer existed.
+- A new commit in a repo with many worktrees no longer sets off a git storm.
+  Each worktree asked every other worktree which commits it held, so a repo with
+  N worktrees ran N × (N − 1) identical `git rev-list` reads per poll (3,782 on
+  a 62-worktree repo, about 95 seconds of git). Each worktree's answer is now
+  remembered until its HEAD moves, so a new commit costs about one read per
+  worktree. Deleted worktrees that git still lists are skipped.
 
 ## [0.41.4] — 2026-11-16
 
