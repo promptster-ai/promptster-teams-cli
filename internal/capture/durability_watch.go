@@ -31,8 +31,25 @@ var (
 )
 
 // gitSymbolicRef resolves a symbolic ref to its full target ref name, or "" when
-// it does not exist / is not symbolic. One read-only spawn.
+// it does not exist / is not symbolic. Read from the repository's files when they
+// answer (git_refs_files.go), else one read-only spawn.
 func gitSymbolicRef(root, name string) string {
+	if r, ok := openFileRefs(root); ok {
+		if name == "HEAD" {
+			if branch, _, ok := r.head(); ok {
+				return branch // "" when detached, as symbolic-ref --quiet says
+			}
+		} else if _, to, exists, ok := r.target(name); ok && exists {
+			if to == "" {
+				return "" // the ref holds a sha, not a name
+			}
+			// symbolic-ref follows a chain to its end by default.
+			if final, _, _, ok := r.follow(to); ok {
+				return final
+			}
+		}
+		// Not found from files (no remote HEAD, or mid-update): git decides.
+	}
 	// #nosec G204 -- constant argv; root is a discovered workspace dir, name is a constant ref. Read-only.
 	out, err := exec.Command("git", "-C", root, "symbolic-ref", "--quiet", name).Output()
 	if err != nil {
@@ -41,9 +58,14 @@ func gitSymbolicRef(root, name string) string {
 	return strings.TrimSpace(string(out))
 }
 
-// gitRefExists reports whether a ref resolves. One read-only spawn (fallback
-// path only, then cached).
+// gitRefExists reports whether a ref resolves: from files when they find it,
+// else one read-only spawn (fallback path only, then cached).
 func gitRefExists(root, ref string) bool {
+	if r, ok := openFileRefs(root); ok {
+		if _, exists, ok := r.resolve(ref); ok && exists {
+			return true
+		}
+	}
 	// #nosec G204 -- constant argv; root discovered, ref is a constant. Read-only.
 	err := exec.Command("git", "-C", root, "rev-parse", "--verify", "--quiet", ref).Run()
 	return err == nil
@@ -75,7 +97,8 @@ func resolveDefaultRef(root string) string {
 // cached: an unborn/detached repo with no default yet (empty result) is re-probed
 // every poll so durability starts as soon as its default branch is created,
 // instead of staying disabled for that root until the process restarts. The
-// re-probe is a handful of constant-time read-only spawns off the critical path.
+// re-probe is a handful of file reads (or, where files cannot answer, read-only
+// spawns) off the critical path.
 func durabilityDefaultRef(root string) string {
 	key := gitWatchRootKey(root)
 	durDefaultRefMu.Lock()
@@ -108,27 +131,41 @@ func invalidateDurabilityDefaultRef(root string) {
 	durDefaultRefMu.Unlock()
 }
 
-// durabilityDefaultTip resolves the default branch's current tip SHA (one
-// rev-parse; the ref itself is cached). ok=false when there is no default scope
+// durabilityDefaultTip resolves the default branch's current tip SHA (from files,
+// or one rev-parse; the ref itself is cached). ok=false when there is no default scope
 // or the tip is unresolvable.
 func durabilityDefaultTip(root string) (ref, tip string, ok bool) {
 	ref = durabilityDefaultRef(root)
 	if ref == "" {
 		return "", "", false
 	}
-	// #nosec G204 -- constant argv; root discovered, ref is a resolved ref name (not user input). Read-only.
-	out, err := exec.Command("git", "-C", root, "rev-parse", "--verify", "--quiet", ref).Output()
-	if err != nil {
+	tip, resolved := defaultTipSha(root, ref)
+	if !resolved {
 		// The cached ref no longer resolves (default branch renamed/deleted). Evict
 		// it so the next poll re-resolves instead of skipping this root forever.
 		invalidateDurabilityDefaultRef(root)
 		return "", "", false
 	}
-	tip = strings.TrimSpace(string(out))
 	if tip == "" {
 		return "", "", false
 	}
 	return ref, tip, true
+}
+
+// defaultTipSha resolves ref to its commit, from the repository's files when
+// they answer exactly (see git_refs_files.go), else with one rev-parse.
+func defaultTipSha(root, ref string) (string, bool) {
+	if r, ok := openFileRefs(root); ok {
+		if sha, exists, ok := r.resolve(ref); ok && exists {
+			return sha, true
+		}
+	}
+	// #nosec G204 -- constant argv; root discovered, ref is a resolved ref name (not user input). Read-only.
+	out, err := exec.Command("git", "-C", root, "rev-parse", "--verify", "--quiet", ref).Output()
+	if err != nil {
+		return "", false
+	}
+	return strings.TrimSpace(string(out)), true
 }
 
 // durabilityCursor returns the last default-branch tip durability processed for
