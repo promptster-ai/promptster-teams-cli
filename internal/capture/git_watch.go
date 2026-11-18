@@ -502,69 +502,38 @@ func (m *heldMemoT) store(checkout, headSig string, asked []string, read map[str
 }
 
 // checkoutHeadSig returns the commit checkout's HEAD points at, resolved from
-// files alone: HEAD's own content when detached, else the branch tip from the
-// loose ref file or, when the branch is packed, its line in packed-refs. These
-// are contents, not timestamps, so two moves within one clock tick still give
-// different answers. The returned sig IS that commit's full sha, and
-// commitsHeldBy reads git against it, so an answer always describes its key.
-// ok=false for anything it cannot resolve exactly (a reftable repository, a ref
-// that is itself symbolic, a per-worktree ref, an unusual .git layout) or whose
-// ancestry can change without HEAD moving (a shallow clone, grafts, replace
-// refs); the caller then asks git without the memo.
+// files alone by the shared reader (git_refs_files.go): HEAD, the loose ref or
+// its packed-refs line, following symbolic refs. These are contents, not
+// timestamps, so two moves within one clock tick still give different answers.
+// The returned sig IS that commit's full sha, and commitsHeldBy reads git
+// against it, so an answer always describes its key. ok=false for anything the
+// reader cannot resolve exactly, or whose ancestry can change without HEAD
+// moving (a shallow clone, grafts, replace refs); the caller then asks git
+// without the memo.
 func checkoutHeadSig(checkout string) (string, bool) {
-	gitdir, common, ok := checkoutGitDirs(checkout)
+	r, ok := openFileRefs(checkout)
 	if !ok {
-		return "", false
-	}
-	if _, err := os.Stat(filepath.Join(common, "reftable")); err == nil {
 		return "", false
 	}
 	// Ancestry can also change while HEAD stays put: deepening a shallow clone,
 	// grafts, or `git replace`. Such repositories are not memoized at all.
 	for _, p := range []string{"shallow", filepath.Join("info", "grafts")} {
-		if _, err := os.Stat(filepath.Join(common, p)); err == nil {
+		if _, err := os.Stat(filepath.Join(r.common, p)); err == nil {
 			return "", false
 		}
 	}
-	if replaced, err := os.ReadDir(filepath.Join(common, "refs", "replace")); err == nil && len(replaced) > 0 {
+	if replaced, err := os.ReadDir(filepath.Join(r.common, "refs", "replace")); err == nil && len(replaced) > 0 {
 		return "", false
 	}
-	packed, packedErr := os.ReadFile(filepath.Join(common, "packed-refs")) // #nosec G304 G703 -- the repository's own packed-refs; read locally, never emitted.
-	if packedErr == nil && strings.Contains(string(packed), " refs/replace/") {
+	packed, ok := r.packedRaw()
+	if !ok || strings.Contains(string(packed), " refs/replace/") {
 		return "", false
 	}
-	head, err := os.ReadFile(filepath.Join(gitdir, "HEAD")) // #nosec G304 -- the checkout's own HEAD file; read locally, never emitted.
-	if err != nil {
-		return "", false
+	_, sha, ok := r.head()
+	if !ok || sha == "" {
+		return "", false // unborn, or mid-update: no memo this time
 	}
-	h := strings.TrimSpace(string(head))
-	ref, symbolic := strings.CutPrefix(h, "ref: ")
-	if !symbolic {
-		return h, isFullObjectName(h)
-	}
-	ref = strings.TrimSpace(ref)
-	// Only a branch: its tip lives in the common dir. Per-worktree refs
-	// (refs/worktree/, refs/bisect/) live in gitdir and are not vouched for.
-	if !strings.HasPrefix(ref, "refs/heads/") || strings.Contains(ref, "..") {
-		return "", false
-	}
-	loose, err := os.ReadFile(filepath.Join(common, filepath.FromSlash(ref))) // #nosec G304 G703 -- a branch ref (refs/heads/, no "..") under the checkout's own git dir; read locally, never emitted.
-	if err == nil {
-		tip := strings.TrimSpace(string(loose))
-		return tip, isFullObjectName(tip) // a symbolic ("ref: ...") branch is not vouched for
-	}
-	if !errors.Is(err, fs.ErrNotExist) {
-		return "", false
-	}
-	if packedErr != nil {
-		return "", false
-	}
-	for _, line := range strings.Split(string(packed), "\n") {
-		if tip, name, found := strings.Cut(strings.TrimSpace(line), " "); found && name == ref && isFullObjectName(tip) {
-			return tip, true
-		}
-	}
-	return "", false // an unborn branch, or one git can see and we cannot
+	return sha, true
 }
 
 // checkoutGitDirs returns checkout's own git dir and its repository's common
@@ -1006,8 +975,15 @@ func dedupRootsByKey(roots []string) []string {
 
 // gitHead returns the root's current HEAD commit, or ok=false when there is no
 // commit yet (unborn branch) or the dir is not a git repo. A detached HEAD
-// still resolves — it is a real commit — so it is tracked normally.
+// still resolves — it is a real commit — so it is tracked normally. Read from
+// the repository's files when they answer (git_refs_files.go), else one spawn.
 func gitHead(root string) (string, bool) {
+	if r, ok := openFileRefs(root); ok {
+		if _, sha, ok := r.head(); ok && sha != "" {
+			return sha, true
+		}
+		// Unborn, or the branch was mid-update: let git give the final answer.
+	}
 	// #nosec G204 -- constant argv; root is a discovered workspace/worktree dir, not user input. Read-only.
 	out, err := exec.Command("git", "-C", root, "rev-parse", "HEAD").Output()
 	if err != nil {
@@ -1999,8 +1975,8 @@ const (
 // remote-tracking tip (refs/remotes/origin/HEAD), which lags a local commit, so
 // ordinary default-branch work would be wrongly seeded as rework. Comparing the
 // checked-out branch name to the default branch name is push-state independent.
-// Two constant-time read-only spawns per root per poll (symbolic-ref HEAD + the
-// cached default ref).
+// Per root per poll: a read of HEAD (from files, or one symbolic-ref spawn where
+// they cannot answer) plus the cached default ref.
 //
 // It also RETURNS the checked-out branch name, which the rework ledger records
 // as the identity of the state it holds. Returning it from here rather than

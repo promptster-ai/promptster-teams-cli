@@ -25,10 +25,12 @@ import (
 // A pushed branch leaves refs/remotes/origin/<branch> in the SHARED ref store,
 // which outlives the worktree, and local branches are shared by every worktree
 // of the repo. So once per REPOSITORY per poll this pass reads every branch and
-// remote-tracking tip (one rev-parse, which also yields the common dir that
-// groups worktrees) and, only when that tip set changed since the last poll,
-// lists `<tips> ^<previous tips> ^<every polled checkout's HEAD>` in one
-// rev-list. Steady state is one spawn per root and no rev-list.
+// remote-tracking tip (read from the repository's files, or one rev-parse where
+// they cannot answer; either also yields the common dir that groups worktrees;
+// a repository's other worktrees contribute only their HEAD) and, only when that
+// tip set changed since the last poll, lists `<tips> ^<previous tips> ^<every
+// polled checkout's HEAD>` in one rev-list. Steady state is no spawn at all for
+// a files-backend repository, and no rev-list.
 //
 // AUTHOR GATE. A fetch moves remote tips over other people's commits. The HEAD
 // pass has no notion of authorship (it emits whatever reaches HEAD, as
@@ -96,9 +98,32 @@ func saveRefTips(next map[string][]string) {
 	})
 }
 
-// gitRefTips reads, in one spawn, root's common git dir, its HEAD, and the
-// sorted, deduped tips of every local branch and remote-tracking ref.
+// gitRefTips reads root's common git dir, its HEAD, and the sorted, deduped tips
+// of every local branch and remote-tracking ref: from the repository's files
+// when they answer (git_refs_files.go), else in one spawn.
 func gitRefTips(root string) (commonDir, head string, tips []string, ok bool) {
+	if r, ok := openFileRefs(root); ok {
+		if commonDir, head, tips, ok := refTipsFromFiles(r); ok {
+			return commonDir, head, tips, true
+		}
+	}
+	return gitRefTipsSpawn(root)
+}
+
+// refTipsFromFiles is gitRefTips answered from files. ok=false on an unborn HEAD
+// or a ref mid-update too: git gives the final answer for those.
+func refTipsFromFiles(r fileRefs) (commonDir, head string, tips []string, ok bool) {
+	_, sha, headOK := r.head()
+	all, tipsOK := r.tips()
+	if !headOK || !tipsOK || sha == "" {
+		return "", "", nil, false
+	}
+	slices.Sort(all)
+	return r.common, sha, slices.Compact(all), true
+}
+
+// gitRefTipsSpawn is gitRefTips in one spawn.
+func gitRefTipsSpawn(root string) (commonDir, head string, tips []string, ok bool) {
 	// #nosec G204 -- constant argv; root is a discovered checkout. Read-only.
 	out, err := exec.Command("git", "-C", root, "rev-parse", "--git-common-dir", "HEAD", "--branches", "--remotes").Output()
 	if err != nil {
@@ -150,7 +175,23 @@ func pollOffHeadCommits(session Session, roots []string, attributed map[string]s
 	var order []string
 	repos := map[string]*repo{}
 	for _, root := range roots {
-		commonDir, head, tips, ok := gitRefTips(root)
+		// Another worktree of a repo already listed contributes only its HEAD, so
+		// read just that rather than walking every ref again.
+		var commonDir, head string
+		var tips []string
+		ok := false
+		if r, opened := openFileRefs(root); opened {
+			if seen, dup := repos[gitWatchRootKey(r.common)]; dup {
+				if _, sha, k := r.head(); k && sha != "" {
+					seen.heads = append(seen.heads, sha)
+					continue
+				}
+			}
+			commonDir, head, tips, ok = refTipsFromFiles(r)
+		}
+		if !ok {
+			commonDir, head, tips, ok = gitRefTipsSpawn(root)
+		}
 		if !ok {
 			continue
 		}
