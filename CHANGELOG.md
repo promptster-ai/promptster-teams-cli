@@ -6,6 +6,18 @@ follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- The background watcher uses much less battery when old worktrees have piled
+  up. git-watch kept polling a repo for 45 days after its last activity even
+  when its directory was gone (a deleted worktree, a temporary clone), and each
+  of those cost git processes every minute that could only fail. On one laptop
+  156 of 251 polled repos were gone. git-watch now skips a repo whose directory
+  is missing, and polls it again if the directory comes back.
+- A commit queued for line-origin analysis whose checkout was then deleted is
+  dropped instead of retried. Each one was retried every second forever, running
+  git in a directory that no longer existed.
+
 ## [0.41.4] — 2026-11-16
 
 ### Fixed

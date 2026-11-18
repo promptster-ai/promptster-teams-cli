@@ -108,6 +108,13 @@ func drainLineOriginPending() {
 		if json.Unmarshal(data, &job) != nil || !originSHA.MatchString(job.SHA) || !filepath.IsAbs(job.Root) {
 			return os.Remove(path)
 		}
+		// A job whose checkout was deleted (a removed worktree, a pr-babysit
+		// clone) can never succeed: every git read in AnalyzeLineOrigin runs
+		// `-C job.Root`. Retrying it re-touched the file and came back to it every
+		// second, so six such jobs cost ~4 git processes a second for good.
+		if rootGone(job.Root) {
+			return os.Remove(path)
+		}
 		if queueLineOrigin(Session{DeviceID: job.DeviceID}, job.Root, job.SHA, job.ObservedMs) {
 			return os.Remove(path)
 		}

@@ -2,7 +2,9 @@ package capture
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -10,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/promptster-ai/promptster-teams-cli/internal/ingest"
@@ -739,6 +742,29 @@ func refreshDiscoveredRepos(roots []string, nowMs int64) {
 		}
 		return os.Rename(tmp, discoveredReposPath())
 	})
+}
+
+// presentRoots returns the roots that are still directories, in order.
+func presentRoots(roots []string) []string {
+	out := make([]string, 0, len(roots))
+	for _, r := range roots {
+		if !rootGone(r) {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
+// rootGone reports whether root definitely cannot be a checkout: it does not
+// exist, a parent became a file (ENOTDIR), or it is not a directory. Any other
+// stat error (permissions, a slow network mount) answers false, so git decides
+// as it always did.
+func rootGone(root string) bool {
+	info, err := os.Stat(root)
+	if err != nil {
+		return errors.Is(err, fs.ErrNotExist) || errors.Is(err, syscall.ENOTDIR)
+	}
+	return !info.IsDir()
 }
 
 // concatRoots flattens root slices into one, allocating fresh so no input slice
@@ -1495,12 +1521,20 @@ func pollGitWatchWorkspace(session Session) {
 	for _, r := range dedupRootsByKey(concatRoots(aiRoots, retained)) {
 		siblings = append(siblings, gitWorktrees(r)...)
 	}
-	roots := dedupRootsByKey(concatRoots(
+	// Every source can name a directory that is gone: a deleted worktree (which
+	// `git worktree list` still reports until pruned), a pr-babysit clone in
+	// $TMPDIR, an agent scratchpad. Each git call on one still costs a process
+	// spawn that can only fail, and a retained row lingers for
+	// discoveredRepoTTLMs (45 days): on one laptop 156 of 251 polled roots were
+	// gone and cost more CPU than the 95 live ones. They are skipped here, not
+	// deleted, so a dir that returns (a remounted volume) is polled again, and
+	// `keep` below still refreshes AI roots exactly as before.
+	roots := presentRoots(dedupRootsByKey(concatRoots(
 		workspaceMatchRoots(resolvePath(session.TaskRoot)),
 		aiRoots,
 		siblings,
 		retained,
-	))
+	)))
 	detected, foldable, drained, coldStart := pollGitWatch(roots, session)
 
 	// Persist the repos with a REASON to stay polled: fresh AI activity or a commit

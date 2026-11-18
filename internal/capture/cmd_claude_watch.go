@@ -1282,7 +1282,16 @@ func transcriptMatchRoots(workspace string) []string {
 
 // gitWorktrees lists every checkout of the repository at root (resolved paths),
 // or nil when root is not a repo.
+//
+// A root that is gone answers nil without spawning git, which is what git would
+// have answered after a wasted process. Callers run this every few seconds over
+// every capture root. The worktrees it LISTS are deliberately not filtered: a
+// deleted agent worktree must stay a transcript match root, or its session's
+// transcript is reclassified as foreign and its capture stops.
 func gitWorktrees(root string) []string {
+	if root != "" && rootGone(root) {
+		return nil
+	}
 	// #nosec G204 -- constant argv; root is a local capture or discovered repo root, not attacker input. Reads only the local worktree list.
 	out, err := exec.Command("git", "-C", root, "worktree", "list", "--porcelain").Output()
 	if err != nil {
