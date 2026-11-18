@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net/http"
 	"os"
 	"os/exec"
@@ -14,6 +15,7 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -1288,22 +1290,172 @@ func transcriptMatchRoots(workspace string) []string {
 // every capture root. The worktrees it LISTS are deliberately not filtered: a
 // deleted agent worktree must stay a transcript match root, or its session's
 // transcript is reclassified as foreign and its capture stops.
+//
+// The list is cached per repository (see worktreeListCache), because every
+// transcript watcher asks it every 3 s for each capture root and git-watch asks
+// it for every worktree of a repo each poll, and all of them get the same list.
 func gitWorktrees(root string) []string {
 	if root != "" && rootGone(root) {
 		return nil
 	}
+	return worktreeLists.get(root, time.Now())
+}
+
+// listGitWorktrees is the uncached read behind gitWorktrees. ok=false when git
+// failed (root is not inside a repo, or git is missing).
+func listGitWorktrees(root string) (wts []string, ok bool) {
 	// #nosec G204 -- constant argv; root is a local capture or discovered repo root, not attacker input. Reads only the local worktree list.
 	out, err := exec.Command("git", "-C", root, "worktree", "list", "--porcelain").Output()
 	if err != nil {
-		return nil
+		return nil, false
 	}
-	var wts []string
 	for _, line := range strings.Split(string(out), "\n") {
 		if strings.HasPrefix(line, "worktree ") {
 			wts = append(wts, resolvePath(strings.TrimSpace(strings.TrimPrefix(line, "worktree "))))
 		}
 	}
-	return wts
+	return wts, true
+}
+
+// worktreeListCache answers gitWorktrees without a spawn while the answer
+// provably has not changed.
+//
+// It finds root's repository the way git does, from the nearest directory at or
+// above root holding a `.git`, so a subdirectory root shares its repository's
+// entry. A repository's worktree list is the main checkout plus one entry per
+// directory under <common-dir>/worktrees/, each naming its checkout in a
+// `gitdir` file. `git worktree add`, `remove` and `prune` change the set of
+// entries; `move` and `repair` rewrite a `gitdir` file. So a list stays valid
+// while the entry names and every `gitdir` file's CONTENT are unchanged. It is
+// contents, not mtimes, on purpose: git refreshes a `gitdir` file's mtime each
+// time that worktree is used, which would discard the list on every poll. The
+// entry is keyed by the common dir, so every worktree of a repo shares one read.
+//
+// Misses (git found no repository) are remembered for worktreeListMissTTL only
+// where no fact on disk can tell us when to look again: no `.git` at root or
+// above it (the home directory, the commonest capture root), or a `.git` this
+// cache cannot read (a stray directory, a submodule). A failed read of a
+// repository it CAN read is never remembered: that is transient, and narrowing
+// the transcript match roots on it would reclassify sessions.
+type worktreeListCache struct {
+	mu     sync.Mutex
+	byRepo map[string]worktreeListEntry // common dir -> list
+	misses map[string]time.Time         // root -> when git last failed there
+}
+
+type worktreeListEntry struct {
+	sig string
+	wts []string
+}
+
+// worktreeListMissTTL bounds how long a miss is reused, and
+// worktreeListMaxEntries the size of each map (reaching it starts over, which
+// only costs re-reads). Package vars so a test can change them.
+var (
+	worktreeListMissTTL    = time.Minute
+	worktreeListMaxEntries = 512
+)
+
+var worktreeLists = &worktreeListCache{}
+
+func (c *worktreeListCache) get(root string, now time.Time) []string {
+	top, found := nearestGitAncestor(root)
+	if found {
+		if common, sig, ok := worktreeListSig(top); ok {
+			c.mu.Lock()
+			e, hit := c.byRepo[common]
+			c.mu.Unlock()
+			if hit && e.sig == sig {
+				return slices.Clone(e.wts)
+			}
+			wts, ok := listGitWorktrees(root)
+			if !ok {
+				return nil // transient: not remembered, the next call retries
+			}
+			c.mu.Lock()
+			if c.byRepo == nil || len(c.byRepo) >= worktreeListMaxEntries {
+				c.byRepo = map[string]worktreeListEntry{}
+			}
+			c.byRepo[common] = worktreeListEntry{sig: sig, wts: wts}
+			c.mu.Unlock()
+			return slices.Clone(wts)
+		}
+	}
+	c.mu.Lock()
+	at, missed := c.misses[root]
+	if missed && now.Sub(at) >= worktreeListMissTTL {
+		delete(c.misses, root)
+		missed = false
+	}
+	c.mu.Unlock()
+	if missed {
+		return nil
+	}
+	wts, ok := listGitWorktrees(root)
+	if !ok {
+		c.mu.Lock()
+		if c.misses == nil || len(c.misses) >= worktreeListMaxEntries {
+			c.misses = map[string]time.Time{}
+		}
+		c.misses[root] = now
+		c.mu.Unlock()
+	}
+	return wts // a success here (an unreadable layout git accepts) is not cached
+}
+
+// nearestGitAncestor returns the nearest directory at or above root that holds
+// a `.git` entry, which is where git's own discovery would stop.
+func nearestGitAncestor(root string) (string, bool) {
+	if root == "" {
+		return "", false
+	}
+	dir := filepath.Clean(root)
+	for {
+		if _, err := os.Lstat(filepath.Join(dir, ".git")); err == nil {
+			return dir, true
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return "", false
+		}
+		dir = parent
+	}
+}
+
+// worktreeListSig returns root's repository common dir and a signature of
+// everything `git worktree list` reads, or ok=false when root's layout is not
+// one it can vouch for (no `.git` in root, an unreadable or unusual `.git`
+// file). ok=false always falls back to asking git.
+func worktreeListSig(root string) (common, sig string, ok bool) {
+	// Only root's own .git locates the registry; it is never part of the
+	// signature. Every worktree of a repo shares this entry, so a per-root part
+	// would make them evict each other on every call.
+	_, common, ok = checkoutGitDirs(root)
+	if !ok {
+		return "", "", false
+	}
+	// A stray `.git` directory with no HEAD is not a repository (git keeps
+	// searching above it); leave it to the miss path. Same test as isGitRepoRoot.
+	if _, err := os.Stat(filepath.Join(common, "HEAD")); err != nil {
+		return "", "", false
+	}
+	var b strings.Builder
+	entries, err := os.ReadDir(filepath.Join(common, "worktrees"))
+	switch {
+	case err == nil:
+		for _, e := range entries {
+			gd, err := os.ReadFile(filepath.Join(common, "worktrees", e.Name(), "gitdir")) // #nosec G304 G703 -- an entry of the repository's own worktree registry; read locally, never emitted.
+			if err != nil {
+				gd = []byte("-")
+			}
+			b.WriteString(e.Name() + "=" + strings.TrimSpace(string(gd)) + "\n")
+		}
+	case errors.Is(err, fs.ErrNotExist):
+		b.WriteString("no-worktrees\n")
+	default:
+		return "", "", false
+	}
+	return resolvePath(common), b.String(), true
 }
 
 // claudeClassifyMaxScanLines bounds how many records either classifier examines

@@ -718,12 +718,13 @@ func samePaths(a, b []string) bool {
 // may write its gitdir pointer relative).
 //
 // SPAWN BUDGET. resolveLedgerScope is called once per COMMIT in three places
-// (commitAttributionFromDiff, pollDurabilityCommit, foldReworkCommit), so an
-// unmemoized spawn here would scale with commits — 3 per commit, and a burst poll
-// is bounded at gitWatchMaxCommitsPerPollTotal. The cache below holds it to at
-// most one spawn per root per poll. The reachability answers those scopes are
-// gated on are held to the same order by being computed per POLL rather than per
-// commit — see siblingLineage.
+// (commitAttributionFromDiff, pollDurabilityCommit, foldReworkCommit), and
+// newSiblingLineage once per root per loop. All of them read the list through
+// gitWorktrees, which is cached per repository and rereads git only when the
+// worktree registry changes (see worktreeListCache), so a new `git worktree
+// add` is seen on the next call and a burst of commits spawns nothing here. The
+// reachability answers those scopes are gated on are held to the same order by
+// being computed per POLL rather than per commit — see siblingLineage.
 func gitSiblingWorktrees(root string) []string {
 	if root == "" {
 		return nil
@@ -732,25 +733,14 @@ func gitSiblingWorktrees(root string) []string {
 		return nil
 	}
 	key := resolvePath(root)
-	nowMs := time.Now().UnixMilli()
-
-	worktreeRootsMu.Lock()
-	if e, ok := worktreeRootsCache[key]; ok && nowMs-e.atMs < gitWorktreeRootsTTL.Milliseconds() {
-		worktreeRootsMu.Unlock()
-		return e.roots
-	}
-	worktreeRootsMu.Unlock()
 
 	var siblings []string
-	// #nosec G204 -- constant argv; root is a repo this install already polls, not attacker input. Reads only the local worktree list.
-	out, err := exec.Command("git", "-C", root, "worktree", "list", "--porcelain").Output()
-	if err == nil {
+	// gitWorktrees, not a spawn of its own: the list is cached per repository,
+	// so every worktree of a 62-worktree repo stops running the same
+	// `git worktree list` each poll.
+	if wts := gitWorktrees(root); wts != nil {
 		seen := map[string]bool{key: true}
-		for _, line := range strings.Split(string(out), "\n") {
-			if !strings.HasPrefix(line, "worktree ") {
-				continue
-			}
-			p := resolvePath(strings.TrimSpace(strings.TrimPrefix(line, "worktree ")))
+		for _, p := range wts {
 			if p == "" || seen[p] {
 				continue
 			}
@@ -759,11 +749,13 @@ func gitSiblingWorktrees(root string) []string {
 		}
 		sort.Strings(siblings)
 	}
-	// A failed spawn is cached as "no siblings" for one interval, deliberately:
-	// retrying it per commit is the fan-out this cache exists to prevent, and the
-	// cost of the miss is an under-count that the next poll corrects.
+	// The entry keeps the list only so siblingLedgerScopes can tell whether its
+	// memoized scopes still describe it. A changed list replaces the entry and
+	// with it the scopes.
 	worktreeRootsMu.Lock()
-	worktreeRootsCache[key] = worktreeRootsEntry{roots: siblings, atMs: nowMs}
+	if e, ok := worktreeRootsCache[key]; !ok || !samePaths(e.roots, siblings) {
+		worktreeRootsCache[key] = worktreeRootsEntry{roots: siblings}
+	}
 	worktreeRootsMu.Unlock()
 	return siblings
 }
@@ -796,16 +788,8 @@ func repoHasLinkedWorktrees(root string) bool {
 	return true
 }
 
-// gitWorktreeRootsTTL bounds how long one repo's worktree list is reused. One
-// poll interval: a `git worktree add` must start contributing its evidence
-// promptly (that is the whole scenario), while a burst of commits inside a single
-// poll spends one spawn, not one per commit. A package var so a test can disable
-// the cache.
-var gitWorktreeRootsTTL = gitWatchInterval
-
 type worktreeRootsEntry struct {
 	roots []string
-	atMs  int64
 	// scopes are `roots` mapped onto the ledger path space for scopeTaskRoot, held
 	// here so the mapping is not recomputed once per commit (see
 	// siblingLedgerScopes). Refreshing the entry drops them with the roots they
