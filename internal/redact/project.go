@@ -325,6 +325,8 @@ var projectFieldAllowlist = map[string][]string{
 		// Capture-health counts: integers only (files on disk vs active in 7d),
 		// never a transcript path/filename/slug. Content-free by construction.
 		"claudeTranscriptsTotal", "claudeTranscriptsActive7d",
+		"codexTranscriptsTotal", "codexTranscriptsActive7d",
+		"cursorTranscriptsTotal", "cursorTranscriptsActive7d",
 	},
 	// Post-commit AI attribution: a PUBLIC commit hash + privacy-safe workspace
 	// id + a per-file list of content-free line-range attributions. workspaceKey

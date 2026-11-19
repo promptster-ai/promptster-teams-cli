@@ -206,6 +206,8 @@ func TestConfigCensusCarriesNoFileContents(t *testing.T) {
 		// closed set, never a path — see configCensusData.ToolsExamined.
 		"toolsExamined",
 		"claudeTranscriptsTotal", "claudeTranscriptsActive7d",
+		// codex*/cursor* transcript counts are absent here: this fixture
+		// examines Claude Code only. See TestCountCodexAndCursorTranscripts.
 	}
 	if len(round) != len(want) {
 		t.Errorf("census shape changed: %v", round)
@@ -291,6 +293,56 @@ func TestCountClaudeTranscriptsUnreadableTreeIsUnknown(t *testing.T) {
 	total, active := countClaudeTranscripts()
 	if total != nil || active != nil {
 		t.Errorf("unreadable subtree must yield (nil, nil) = unknown, got %v/%v", total, active)
+	}
+}
+
+// TestCountCodexAndCursorTranscripts pins the other two tools' counts: only
+// the files each watcher would tail count (Codex rollouts, live and archived;
+// Cursor files under agent-transcripts, not its MCP state or terminals), a
+// missing folder is a definite (0, 0), and a tool the census did not examine
+// ("" root) reports nothing.
+func TestCountCodexAndCursorTranscripts(t *testing.T) {
+	codex, cursor := t.TempDir(), t.TempDir()
+	write := func(p string, at time.Time) {
+		t.Helper()
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte("{}\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chtimes(p, at, at); err != nil {
+			t.Fatal(err)
+		}
+	}
+	now, old := time.Now(), time.Now().Add(-30*24*time.Hour)
+	write(filepath.Join(codex, "sessions", "2026", "11", "19", "rollout-a.jsonl"), now)
+	write(filepath.Join(codex, "archived_sessions", "rollout-b.jsonl"), old)
+	write(filepath.Join(codex, "sessions", "2026", "11", "19", "history.jsonl"), now) // not a rollout
+
+	if total, active := countCodexTranscripts(codex); total == nil || active == nil || *total != 2 || *active != 1 {
+		t.Errorf("codex = %v/%v, want 2 total (one archived), 1 active", total, active)
+	}
+	if total, active := countCursorTranscripts(filepath.Join(cursor, "missing")); total == nil || active == nil || *total != 0 || *active != 0 {
+		t.Errorf("cursor with no folder = %v/%v, want a definite (0, 0)", total, active)
+	}
+	if total, active := countCodexTranscripts(""); total != nil || active != nil {
+		t.Errorf("codex not examined = %v/%v, want nothing", total, active)
+	}
+
+	write(filepath.Join(cursor, "projects", "w", "agent-transcripts", "u1", "u1.jsonl"), now)
+	write(filepath.Join(cursor, "projects", "w", "agent-transcripts", "u1", "subagents", "u2.jsonl"), now)
+	write(filepath.Join(cursor, "projects", "w", "mcps", "state.jsonl"), now) // not a transcript
+	if os.Geteuid() != 0 {
+		// An unreadable terminals folder says nothing about the transcripts.
+		locked := filepath.Join(cursor, "projects", "w", "terminals")
+		if err := os.MkdirAll(locked, 0o000); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = os.Chmod(locked, 0o755) })
+	}
+	if total, active := countCursorTranscripts(cursor); total == nil || active == nil || *total != 2 || *active != 2 {
+		t.Errorf("cursor = %v/%v, want 2 total, 2 active", total, active)
 	}
 }
 

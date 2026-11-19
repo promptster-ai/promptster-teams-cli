@@ -6,6 +6,15 @@ follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- The config census counts Codex rollouts (archived ones too) and Cursor agent transcripts on disk
+  (total, and modified in the last 7 days), as it already did for Claude Code.
+  The team dashboard can then tell an engineer using Codex or Cursor with
+  nothing captured from one not using it. Two integers per tool: no path, file
+  or repo, and the files are never opened. A folder that cannot be read sends
+  nothing, which the backend reads as unknown, never as zero.
+
 ## [0.41.5] — 2026-11-18
 
 ### Fixed
