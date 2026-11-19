@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/promptster-ai/promptster-teams-cli/internal/event"
@@ -207,6 +208,14 @@ type configCensusData struct {
 	// ClaudeTranscriptsTotal / ClaudeTranscriptsActive7d — see below.
 	ClaudeTranscriptsTotal    *int `json:"claudeTranscriptsTotal,omitempty"`
 	ClaudeTranscriptsActive7d *int `json:"claudeTranscriptsActive7d,omitempty"`
+	// The same two counts for Codex rollouts (live and archived) and Cursor
+	// agent transcripts, on the same terms: integers only, nil = could not read
+	// or tool not examined, so the backend can tell "using this tool, nothing
+	// captured" from "not using it" per tool.
+	CodexTranscriptsTotal     *int `json:"codexTranscriptsTotal,omitempty"`
+	CodexTranscriptsActive7d  *int `json:"codexTranscriptsActive7d,omitempty"`
+	CursorTranscriptsTotal    *int `json:"cursorTranscriptsTotal,omitempty"`
+	CursorTranscriptsActive7d *int `json:"cursorTranscriptsActive7d,omitempty"`
 }
 
 // censusEnv points the census builder at the config surfaces it inventories.
@@ -796,6 +805,8 @@ func buildConfigCensus(env censusEnv) configCensusData {
 	}
 
 	data.ClaudeTranscriptsTotal, data.ClaudeTranscriptsActive7d = countClaudeTranscripts()
+	data.CodexTranscriptsTotal, data.CodexTranscriptsActive7d = countCodexTranscripts(env.codexDir)
+	data.CursorTranscriptsTotal, data.CursorTranscriptsActive7d = countCursorTranscripts(env.cursorDir)
 
 	return data
 }
@@ -808,47 +819,105 @@ func buildConfigCensus(env censusEnv) configCensusData {
 // walk shape (recursive; subagent sidechain files under <session>/subagents/
 // are counted — they are real transcript files on disk).
 func countClaudeTranscripts() (total *int, active7d *int) {
-	dir := ClaudeProjectsDir()
-	info, err := os.Stat(dir)
-	if err != nil {
-		if os.IsNotExist(err) {
-			// Projects dir absent = genuinely no local Claude Code transcripts: a
-			// DEFINITE zero (the backend reads it as "no local CC", not "unknown").
-			z0, z1 := 0, 0
-			return &z0, &z1
-		}
-		// Dir exists but can't be statted (e.g. permissions) → unreliable; omit.
+	return countTranscripts([]string{ClaudeProjectsDir()}, func(path string) bool {
+		return strings.HasSuffix(filepath.Base(path), ".jsonl")
+	}, nil)
+}
+
+// countCodexTranscripts is the same tally over Codex rollouts
+// (rollout-*.jsonl, the files the Codex watcher tails), live and archived:
+// archiving a thread moves it from sessions/ to archived_sessions/, and it is
+// still use of Codex. codexDir "" (Codex not examined) reports nothing.
+func countCodexTranscripts(codexDir string) (total *int, active7d *int) {
+	if codexDir == "" {
 		return nil, nil
 	}
-	if !info.IsDir() {
+	roots := []string{filepath.Join(codexDir, "sessions"), filepath.Join(codexDir, "archived_sessions")}
+	return countTranscripts(roots, func(path string) bool {
+		base := filepath.Base(path)
+		return strings.HasPrefix(base, "rollout-") && strings.HasSuffix(base, ".jsonl")
+	}, nil)
+}
+
+// countCursorTranscripts is the same tally over Cursor agent transcripts, by
+// the watcher's own test. The projects tree also holds terminals, MCP state and
+// canvases that Cursor rewrites constantly; an error there says nothing about
+// the transcripts, so only errors under agent-transcripts make the count
+// unknown. cursorDir "" (Cursor not examined) reports nothing.
+func countCursorTranscripts(cursorDir string) (total *int, active7d *int) {
+	if cursorDir == "" {
 		return nil, nil
+	}
+	return countTranscripts([]string{filepath.Join(cursorDir, "projects")}, func(path string) bool {
+		return strings.HasSuffix(path, ".jsonl") && isCursorTranscriptPath(path)
+	}, func(path string) bool {
+		return strings.Contains(filepath.ToSlash(path), "/agent-transcripts")
+	})
+}
+
+// transcriptCountMemo keeps one walk per tree per census run: a device emits
+// one census per active repo, and every one of them carries the same
+// machine-wide counts.
+var (
+	transcriptCountMu   sync.Mutex
+	transcriptCountMemo = map[string]transcriptCount{}
+)
+
+type transcriptCount struct {
+	total, active *int
+	at            time.Time
+}
+
+const transcriptCountTTL = time.Minute
+
+// countTranscripts stats (never opens) the files under roots that isTranscript
+// accepts. A missing root counts as none: a tool's folder that does not exist
+// is a DEFINITE zero, which the backend reads as "not using it". A root or
+// subtree that cannot be read is (nil, nil), UNKNOWN, never a false low count.
+// errMatters, when set, limits that to errors on paths it accepts; a file
+// deleted mid-walk (ENOENT) never counts as a failure.
+func countTranscripts(roots []string, isTranscript func(path string) bool, errMatters func(path string) bool) (total *int, active7d *int) {
+	key := strings.Join(roots, "\x00")
+	transcriptCountMu.Lock()
+	defer transcriptCountMu.Unlock()
+	if c, ok := transcriptCountMemo[key]; ok && time.Since(c.at) < transcriptCountTTL {
+		return c.total, c.active
 	}
 	cutoff := time.Now().Add(-7 * 24 * time.Hour)
 	var t, a int
 	walkFailed := false
-	_ = filepath.Walk(dir, func(path string, fi os.FileInfo, werr error) error {
-		if werr != nil {
-			// A subtree we cannot read → the tally would be partial/untrustworthy.
-			// Flag it so we report UNKNOWN rather than a false low count.
+	for _, root := range roots {
+		info, err := os.Stat(root)
+		if os.IsNotExist(err) {
+			continue
+		}
+		if err != nil || !info.IsDir() {
 			walkFailed = true
+			break
+		}
+		_ = filepath.Walk(root, func(path string, fi os.FileInfo, werr error) error {
+			if werr != nil {
+				if !os.IsNotExist(werr) && (errMatters == nil || path == root || errMatters(path)) {
+					walkFailed = true
+				}
+				return nil
+			}
+			if fi.IsDir() || !isTranscript(path) {
+				return nil
+			}
+			t++
+			if fi.ModTime().After(cutoff) {
+				a++
+			}
 			return nil
-		}
-		if fi.IsDir() {
-			return nil
-		}
-		if !strings.HasSuffix(filepath.Base(path), ".jsonl") {
-			return nil
-		}
-		t++
-		if fi.ModTime().After(cutoff) {
-			a++
-		}
-		return nil
-	})
-	if walkFailed {
-		return nil, nil
+		})
 	}
-	return &t, &a
+	c := transcriptCount{total: &t, active: &a, at: time.Now()}
+	if walkFailed {
+		c.total, c.active = nil, nil
+	}
+	transcriptCountMemo[key] = c
+	return c.total, c.active
 }
 
 // censusSkills enumerates <skillsDir>/*/SKILL.md: slug = dir name, name =
