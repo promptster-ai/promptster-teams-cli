@@ -33,6 +33,8 @@ func TestMain(m *testing.M) {
 	_ = os.Setenv("GIT_CONFIG_GLOBAL", filepath.Join(dir, "absent-gitconfig"))
 	_ = os.Setenv("GIT_CONFIG_NOSYSTEM", "1")
 	cursorProcessArgs = func() []string { return nil } // never the developer's running Cursor
+	// Nor the developer's keychain: no test may raise a real macOS prompt.
+	cursorSecurityBin = filepath.Join(dir, "absent-security")
 	code := m.Run()
 	_ = os.RemoveAll(dir)
 	os.Exit(code)
