@@ -17,7 +17,10 @@ import (
 const (
 	safeStorageVectorPassword = "test-keychain-password"
 	safeStorageVectorStored   = "cursor-safe-storage:v1:djEwC2VxEX5qqs+bri3TEiie2dwrIxv8jX6bzxckKUg8iWXyG2OueY8dq7POzyYYbZz0vXY3xecHV6O2QRZIbiXf6NnpqaOkJzRuGHENEOvCjk8="
-	safeStorageVectorToken    = "eyJhbGciOiJub25lIn0.eyJzdWIiOiJ1c2VyX3ZlY3RvciIsImV4cCI6NDEwMjQ0NDgwMH0.sig"
+	// A synthetic unsigned JWT ({"alg":"none"}, sub "user_vector", signature
+	// "sig"), never issued. The stored vector above encrypts exactly this string,
+	// so it can't change; the directive stops generic-api-key reading it as a key.
+	safeStorageVectorToken = "eyJhbGciOiJub25lIn0.eyJzdWIiOiJ1c2VyX3ZlY3RvciIsImV4cCI6NDEwMjQ0NDgwMH0.sig" //gitleaks:allow
 )
 
 // fakeKeychain swaps the keychain read for the test and clears the backoff,
