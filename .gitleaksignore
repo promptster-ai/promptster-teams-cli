@@ -37,3 +37,12 @@ ab2d824403c8bf8a44e07586f66b338fddcccf21:redact_test.go:generic-api-key:42
 c9f36a26dd831d5159a465392700def17397a55a:presence_test.go:generic-api-key:14
 c9f36a26dd831d5159a465392700def17397a55a:presence_test.go:generic-api-key:80
 eeddd5a88bd561a9293c4f5fc2101d80507b0ec0:redact_test.go:generic-api-key:22
+
+# cursor_safe_storage_test.go's Chromium safe-storage round-trip vector: the
+# plaintext is a synthetic unsigned JWT ({"alg":"none"}, sub "user_vector",
+# signature "sig"), never issued. #322 added it as one literal, which reads to
+# generic-api-key as an assignment with 5.15 entropy. HEAD marks the line
+# //gitleaks:allow; these cover the PR commit and its squash on main, which the
+# full-history scan still walks.
+d8684b34b31a5a4f9076bed43eb35bc3e3570b75:internal/capture/cursor_safe_storage_test.go:generic-api-key:20
+5bb486dd9d71385172231df9061e68415fec2d53:internal/capture/cursor_safe_storage_test.go:generic-api-key:20
