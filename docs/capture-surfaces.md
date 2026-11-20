@@ -212,6 +212,25 @@ back to a byte copy), reads only `cursorAuth/accessToken`,
 `cursorAuth/refreshToken` and `cursorAuth/cachedEmail` from that clone, then
 deletes it. It never opens the live database and never reads neighbouring keys.
 
+Cursor can store those two tokens encrypted at rest (`cursor-safe-storage:v1:`,
+switched on by Cursor; first seen with 3.29). Only then, the watcher reads the
+one keychain item that holds Cursor's key, `Cursor Safe Storage`, through
+`/usr/bin/security find-generic-password -w`, once per cycle, and decrypts the
+token in memory (Chromium os_crypt: AES-128-CBC, PBKDF2-SHA1). macOS asks
+"security wants to use your confidential information stored in Cursor Safe
+Storage". Only **Always Allow** stops the question: a plain Allow grants one
+read, so after two prompted reads in a row the watcher waits 12 hours before
+asking again. Always Allow puts `/usr/bin/security` on that item's access
+list, so any process running as the engineer can then read Cursor's key the
+same way; that is the exposure Cursor's token had when it was stored in
+plaintext. (Our own binary is ad-hoc signed, so a grant naming it would not
+survive a CLI update.) The key and the decrypted token are never cached across
+cycles, logged or sent. A call with no answer in 60 seconds is stopped and
+retried after an hour; a denied prompt is not raised again for 12 hours.
+Meanwhile each cycle sends a `credential_absent` absence with
+`absenceDetail: token_encrypted`.
+A plaintext token never touches the keychain.
+
 The same read covers extra Cursor profiles: a Cursor started with
 `--user-data-dir <dir>` keeps its login in `<dir>/User/globalStorage/state.vscdb`.
 Each cycle the watcher lists running processes (`ps -axww -o args=`) and takes

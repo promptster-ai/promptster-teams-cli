@@ -152,6 +152,12 @@ const (
 	cursorDetailAgentAuthOversized   cursorCredentialDetail = "agent_auth_oversized"
 	cursorDetailAgentAuthUnreadable  cursorCredentialDetail = "agent_auth_unreadable"
 	cursorDetailAgentAuthUnparseable cursorCredentialDetail = "agent_auth_unparseable"
+
+	// token_encrypted: the store holds Cursor's encrypted-at-rest value
+	// ("cursor-safe-storage:v1:") and it could not be decrypted: no keychain
+	// item, a prompt denied, dismissed or unanswered, or a value that did not
+	// decrypt. See cursor_safe_storage.go.
+	cursorDetailTokenEncrypted cursorCredentialDetail = "token_encrypted"
 )
 
 // errNoCursorAuthRows is a store that was read and holds none of the keys.
@@ -234,8 +240,16 @@ func readCursorCredential() (cursorCredential, error) {
 }
 
 // readCursorCredentialAt is readCursorCredential for one store path: the
-// default profile's, or an extra profile's (cursorExtraProfileStateDBs).
+// default profile's, or an extra profile's (cursorExtraProfileStateDBs), with
+// a keychain key of its own.
 func readCursorCredentialAt(path string) (cursorCredential, error) {
+	ck := &cursorCycleKey{}
+	defer ck.close()
+	return readCursorCredentialWith(path, ck)
+}
+
+// readCursorCredentialWith reads one store, sharing the cycle's keychain key.
+func readCursorCredentialWith(path string, ck *cursorCycleKey) (cursorCredential, error) {
 	if _, statErr := os.Stat(path); statErr != nil {
 		switch {
 		case errors.Is(statErr, fs.ErrNotExist):
@@ -249,6 +263,11 @@ func readCursorCredentialAt(path string) (cursorCredential, error) {
 
 	values, emailHMAC, _, err := readCursorAuthKeys(path)
 	if err != nil {
+		return cursorCredential{}, err
+	}
+	// Cursor may store the tokens encrypted at rest; a plaintext value passes
+	// through untouched and the keychain is never asked.
+	if err := decryptCursorStoreTokens(values, ck); err != nil {
 		return cursorCredential{}, err
 	}
 

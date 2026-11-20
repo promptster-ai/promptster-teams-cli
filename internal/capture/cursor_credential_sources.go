@@ -76,11 +76,17 @@ type cursorCredentialSource struct {
 // is always first and always present, so its absence reason is the one reported
 // when no source identifies a login, exactly as before this list existed.
 func readCursorCredentialSources() []cursorCredentialSource {
-	idePath, _ := cursorStateDBPath()
-	cred, err := readCursorCredential()
+	// One keychain key for the whole cycle, so encrypted profiles share a prompt.
+	ck := &cursorCycleKey{}
+	defer ck.close()
+	idePath, err := cursorStateDBPath()
+	var cred cursorCredential
+	if err == nil {
+		cred, err = readCursorCredentialWith(idePath, ck)
+	}
 	sources := []cursorCredentialSource{{kind: cursorSourceIDEStateDB, path: idePath, cred: cred, err: err}}
 	for _, path := range cursorExtraProfileStateDBs() {
-		cred, err := readCursorCredentialAt(path)
+		cred, err := readCursorCredentialWith(path, ck)
 		sources = append(sources, cursorCredentialSource{kind: cursorSourceIDEProfile, path: path, cred: cred, err: err})
 	}
 	if agent, ok := readCursorAgentAuthFile(); ok {

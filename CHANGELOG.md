@@ -6,6 +6,19 @@ follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- Cursor vendor usage works again for Cursor logins whose token Cursor now
+  stores encrypted (seen from Cursor 3.29, 2026-11-12). Every poll on such a
+  Mac had reported `credential_absent` / `token_no_sub`. The watcher now reads
+  Cursor's own key from the macOS keychain item `Cursor Safe Storage` and
+  decrypts the token in memory. macOS asks "security wants to use ... Cursor
+  Safe Storage"; choose Always Allow (a plain Allow is asked again, at most
+  twice per 12 hours). A plaintext token is read as before and never touches
+  the keychain. A missing key, a denied prompt (not asked again for 12 hours),
+  an unanswered one (stopped after 60 seconds, retried after an hour) or a
+  value that does not decrypt is reported as `token_encrypted`.
+
 ### Added
 
 - The config census counts Codex rollouts (archived ones too) and Cursor agent transcripts on disk
