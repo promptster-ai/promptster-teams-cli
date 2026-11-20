@@ -6,6 +6,8 @@ follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.42.0] — 2026-11-19
+
 ### Fixed
 
 - Cursor vendor usage works again for Cursor logins whose token Cursor now
