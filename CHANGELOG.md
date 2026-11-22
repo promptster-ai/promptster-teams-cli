@@ -6,6 +6,18 @@ follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- A commit that no AI session could be matched to now says why, in two
+  content-free fields on its `commit_attribution` event: `unattributedReason`
+  (no AI evidence for this repository, AI edits to other files only, shell
+  windows only from another worktree, files no longer on disk, or the nearest
+  AI shell window missed the file's modification time early or late) and
+  `bashWindowGapMs` (that miss, in ms). Never a path or a command. Sampled
+  unmatched merged PRs were almost all AI-written, so the backend can now
+  measure which cause leaves them unmatched instead of counting them as human
+  work. Needs promptster-backend #1372, which allow-lists both fields.
+
 ## [0.42.0] — 2026-11-19
 
 ### Fixed
