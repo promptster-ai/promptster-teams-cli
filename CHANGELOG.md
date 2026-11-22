@@ -6,6 +6,8 @@ follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.43.0] — 2026-11-22
+
 ### Added
 
 - A commit that no AI session could be matched to now says why, in two
