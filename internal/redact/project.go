@@ -337,8 +337,10 @@ var projectFieldAllowlist = map[string][]string{
 	// line — they clamp both array levels to scalar keys only. aiTokens is a
 	// content-free scalar: the o200k tiktoken count of this commit's likely_ai
 	// added lines (the denominator for the backend's token-efficiency ratio),
-	// never the line text or bytes.
-	"commit_attribution": {"commitSha", "workspaceKey", "files", "aiTokens"},
+	// never the line text or bytes. unattributedReason (a closed enum) and
+	// bashWindowGapMs (an integer) say WHY an all-unknown commit reached no AI
+	// session: evidence states, never a path or a command.
+	"commit_attribution": {"commitSha", "workspaceKey", "files", "aiTokens", "unattributedReason", "bashWindowGapMs"},
 	"commit_line_origin": {"version", "commitSha", "workspaceKey", "state", "replacedLines", "tracedLines", "skippedFiles", "cappedFiles", "replacedFrom"},
 	// durability_verdict reports WHICH AI line ranges survived (durableRanges),
 	// were rewritten (churnedRanges), or are still tracked and undecided

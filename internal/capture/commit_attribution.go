@@ -136,13 +136,22 @@ var diffHunkRe = regexp.MustCompile(`^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@`)
 // the rework ledger has to see it or the renamed file's tracked spans strand at a
 // path that no longer exists. Only a failed `git show` yields an empty diff.
 func commitAttributionFromDiff(root, taskRoot, sha string, lin siblingLineage) (diff string, files []attrFile, primarySession string, ok bool) {
+	diff, files, primarySession, _, ok = commitAttributionWithDiag(root, taskRoot, sha, lin)
+	return diff, files, primarySession, ok
+}
+
+// commitAttributionWithDiag is commitAttributionFromDiff plus, for a commit no
+// file of which reached an AI session, WHY — classified from the very ledger
+// reads reconcile used, so the reason can't describe evidence attribution never
+// saw.
+func commitAttributionWithDiag(root, taskRoot, sha string, lin siblingLineage) (diff string, files []attrFile, primarySession string, diag unattributedDiag, ok bool) {
 	diff, ok = gitCommitRawDiff(root, sha)
 	if !ok || diff == "" {
-		return "", nil, "", false
+		return "", nil, "", diag, false
 	}
 	fileRanges := parseUnifiedDiffNewRanges(diff)
 	if len(fileRanges) == 0 {
-		return diff, nil, "", false
+		return diff, nil, "", diag, false
 	}
 	// The ledgers are anchored to the workspace (taskRoot), not to each polled
 	// repo — in the daemon taskRoot is HOME and root is a repo discovered under it.
@@ -151,7 +160,8 @@ func commitAttributionFromDiff(root, taskRoot, sha string, lin siblingLineage) (
 	// root == taskRoot (explicit repo) the scope is the identity. Scoping to one
 	// key also keeps a same-named path AI-touched in a DIFFERENT repo from bleeding in.
 	scope := resolveLedgerScope(root, taskRoot, sha, lin)
-	files, _ = reconcileCommitAttribution(root, scope, fileRanges, readAiTouchedPaths(scope.aiKey), readBashWindows(scope.aiKey))
+	aiPaths, windows := readAiTouchedPaths(scope.aiKey), readBashWindows(scope.aiKey)
+	files, _ = reconcileCommitAttribution(root, scope, fileRanges, aiPaths, windows)
 	applyDependencyAttribution(root, sha, files)
 	sessions := map[string]int{}
 	for _, f := range files {
@@ -160,7 +170,14 @@ func commitAttributionFromDiff(root, taskRoot, sha string, lin siblingLineage) (
 		}
 	}
 	primarySession = mostFrequentSession(sessions)
-	return diff, files, primarySession, true
+	if primarySession == "" {
+		paths := make([]string, 0, len(files))
+		for _, f := range files {
+			paths = append(paths, f.Path)
+		}
+		diag = classifyUnattributed(root, scope, paths, aiPaths, windows)
+	}
+	return diff, files, primarySession, diag, true
 }
 
 // parseUnifiedDiffNewRanges extracts, per changed file, the NEW-side changed
@@ -325,25 +342,7 @@ func recoverBashSession(root, relPath string, windows []bashWindow) (string, boo
 	}
 	mtimeMs := info.ModTime().UnixMilli()
 
-	// Only a window whose command worked in THIS checkout (or that recorded no
-	// checkout — older ledgers) may claim the file. With several agents running at
-	// once, a quarter of Bash calls land within 6s of another session's, and the
-	// nearest window alone credited whichever happened to be closest.
-	here := resolvePath(root)
-	eligible := windows[:0:0]
-	for _, w := range windows {
-		if len(w.Roots) == 0 {
-			eligible = append(eligible, w)
-			continue
-		}
-		for _, r := range w.Roots {
-			if r == here {
-				eligible = append(eligible, w)
-				break
-			}
-		}
-	}
-	windows = eligible
+	windows = eligibleBashWindows(root, windows)
 
 	best := ""
 	bestDist := int64(-1)
@@ -362,6 +361,146 @@ func recoverBashSession(root, relPath string, windows []bashWindow) (string, boo
 		return "", false
 	}
 	return best, true
+}
+
+// eligibleBashWindows keeps the windows whose command worked in THIS checkout
+// (or that recorded no checkout — older ledgers): only those may claim a file.
+// With several agents running at once, a quarter of Bash calls land within 6s of
+// another session's, and the nearest window alone credited whichever happened to
+// be closest.
+func eligibleBashWindows(root string, windows []bashWindow) []bashWindow {
+	here := resolvePath(root)
+	eligible := windows[:0:0]
+	for _, w := range windows {
+		if len(w.Roots) == 0 {
+			eligible = append(eligible, w)
+			continue
+		}
+		for _, r := range w.Roots {
+			if r == here {
+				eligible = append(eligible, w)
+				break
+			}
+		}
+	}
+	return eligible
+}
+
+// Why an all-unknown commit reached no AI session: a closed enum of evidence
+// states, sent as commit_attribution.unattributedReason so the backend can
+// measure the attribution gap's causes instead of reading every miss as human
+// work. The backend's commit_attribution stringScalars pattern for the field
+// (promptster-backend captureAllowlist.ts) must list exactly these: a value it
+// doesn't list is dropped at ingest, silently.
+const (
+	unattributedNoAIEvidence   = "no_ai_evidence"         // no AI edit or bash window recorded for this repository
+	unattributedPathsNotLedger = "paths_not_in_ledger"    // AI edits recorded for other files of this repository; no window here
+	unattributedOtherCheckout  = "windows_other_checkout" // bash windows only from this repository's other worktrees
+	unattributedFileMissing    = "file_missing"           // no committed file is in the working tree to stat
+	unattributedBashMissEarly  = "bash_window_miss_early" // mtime before the nearest window, beyond δ
+	unattributedBashMissLate   = "bash_window_miss_late"  // mtime after the nearest window, beyond ε
+)
+
+// unattributedDiag is the reason plus, for a bash miss, how far (ms) the nearest
+// eligible window was from the nearest file mtime (always beyond δ/ε: a window
+// within tolerance would have matched).
+// A zero Reason means no diagnosis (nothing is stamped).
+type unattributedDiag struct {
+	Reason string
+	GapMs  int64
+	HasGap bool
+}
+
+// holds reports whether a ledger key (as capture stored it) is a path inside
+// this scope's checkout.
+func (s ledgerScope) holds(key string) bool {
+	switch {
+	case s.absRoot != "":
+		return strings.HasPrefix(key, s.absRoot+"/")
+	case s.prefix == "":
+		return true // root IS the workspace: every key is this checkout's
+	default:
+		return strings.HasPrefix(key, s.prefix+"/")
+	}
+}
+
+// classifyUnattributed explains a commit whose files all stayed unknown, from the
+// SAME evidence reconcileCommitAttribution read. Those ledgers are keyed by the
+// WORKSPACE (HOME, in the daemon), so evidence is first narrowed to this
+// repository: its own paths, windows from this checkout, and windows from its
+// sibling worktrees. Windows from other repositories or from no checkout at all
+// ("-") say nothing about this commit and are ignored.
+func classifyUnattributed(root string, scope ledgerScope, paths []string, aiPaths map[string]string, windows []bashWindow) unattributedDiag {
+	inRepo := false
+	for key := range aiPaths {
+		if scope.holds(key) {
+			inRepo = true
+			break
+		}
+		for _, alt := range scope.alts {
+			if alt.holds(key) {
+				inRepo = true
+				break
+			}
+		}
+	}
+	eligible := eligibleBashWindows(root, windows)
+	if len(eligible) == 0 {
+		for _, w := range windows {
+			for _, r := range w.Roots {
+				for _, alt := range scope.alts {
+					if alt.root != "" && r == alt.root {
+						return unattributedDiag{Reason: unattributedOtherCheckout}
+					}
+				}
+			}
+		}
+		if inRepo {
+			return unattributedDiag{Reason: unattributedPathsNotLedger}
+		}
+		return unattributedDiag{Reason: unattributedNoAIEvidence}
+	}
+	var best unattributedDiag
+	statted := false
+	for _, p := range paths {
+		info, err := os.Stat(filepath.Join(root, p))
+		if err != nil {
+			continue
+		}
+		statted = true
+		mtime := info.ModTime().UnixMilli()
+		for _, w := range eligible {
+			if _, within := windowDistanceMs(mtime, w); within {
+				// Recovery would have matched this; reaching here means the file
+				// changed since. Not a tolerance miss, so it is not reported as one.
+				continue
+			}
+			reason, gap := unattributedBashMissLate, mtime-w.EndMs
+			if mtime < w.StartMs {
+				reason, gap = unattributedBashMissEarly, w.StartMs-mtime
+			}
+			if !best.HasGap || gap < best.GapMs {
+				best = unattributedDiag{Reason: reason, GapMs: gap, HasGap: true}
+			}
+		}
+	}
+	if !statted {
+		return unattributedDiag{Reason: unattributedFileMissing}
+	}
+	return best
+}
+
+// withUnattributedDiag stamps the diagnosis onto an all-unknown commit's event.
+func withUnattributedDiag(e event.Event, d unattributedDiag) event.Event {
+	data, ok := e.Data.(map[string]interface{})
+	if !ok || d.Reason == "" {
+		return e
+	}
+	data["unattributedReason"] = d.Reason
+	if d.HasGap {
+		data["bashWindowGapMs"] = d.GapMs
+	}
+	return e
 }
 
 // windowDistanceMs reports how far mtimeMs sits from window w, and whether it is
@@ -416,11 +555,12 @@ func mostFrequentSession(counts map[string]int) string {
 // projector's element allowlist can walk. Assigning the struct straight to Data
 // would silently ship {} (see eventDataMap's header).
 func buildCommitAttributionEvent(session Session, root, sha string, lin siblingLineage) (event.Event, bool) {
-	diff, files, primarySession, ok := commitAttributionFromDiff(root, session.TaskRoot, sha, lin)
+	diff, files, primarySession, diag, ok := commitAttributionWithDiag(root, session.TaskRoot, sha, lin)
 	if !ok {
 		return event.Event{}, false
 	}
-	return assembleCommitAttributionEvent(session, root, sha, files, primarySession, commitAiTokens(diff, files)), true
+	ev := assembleCommitAttributionEvent(session, root, sha, files, primarySession, commitAiTokens(diff, files))
+	return withUnattributedDiag(ev, diag), true
 }
 
 // assembleCommitAttributionEvent wraps reconciled files into a ready-to-funnel
@@ -532,7 +672,7 @@ func attributeCommit(session Session, root, sha string, nowMs int64, lin sibling
 // survives.
 func attributeAndReworkCommit(session Session, root, sha string, foldRework, foreign, aiOnly bool, nowMs int64, lin siblingLineage) (recordable, deferred bool) {
 	// Independent receipt also covers fixes that only delete lines.
-	diff, files, primarySession, ok := commitAttributionFromDiff(root, session.TaskRoot, sha, lin)
+	diff, files, primarySession, diag, ok := commitAttributionWithDiag(root, session.TaskRoot, sha, lin)
 	if ok && !foreign && aiOnly && primarySession == "" {
 		return true, true // off-HEAD, no local AI evidence: leave it to the HEAD pass
 	}
@@ -552,7 +692,8 @@ func attributeAndReworkCommit(session Session, root, sha string, foldRework, for
 		}
 		return true, false
 	}
-	if !emitCommitAttribution(assembleCommitAttributionEvent(session, root, sha, files, primarySession, commitAiTokens(diff, files))) {
+	ev := withUnattributedDiag(assembleCommitAttributionEvent(session, root, sha, files, primarySession, commitAiTokens(diff, files)), diag)
+	if !emitCommitAttribution(ev) {
 		// Never durably queued. Do NOT let the caller remember this SHA, or the
 		// ledger would suppress the retry for its whole TTL.
 		return false, false
