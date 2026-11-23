@@ -241,6 +241,28 @@ than from the polled directory alone. It is NOT "the same granularity" as the
 one-directory residual: the blast radius is every checkout holding that commit,
 which is why the lineage gate is the thing holding it down.
 
+**`commit_attribution` (and only it) recovers part of that by CONTENT.** Agents
+that work in a throwaway worktree (Codex's `.worktrees/<ticket>`), commit, and
+remove it — or whose branch lands as a squash, a SHA no checkout held — read
+`unknown` above. The ai-content ledger (`ai-content.json`, `ai_content.go`)
+records the git blob name of each LIVE AI write, keyed by the repository's
+common git dir and the repo-relative path. A file still unknown after the path
+and bash passes is credited when its committed blob is that exact name: the
+agent's bytes, in this repository, at this path. A human's different bytes never
+match, which is the line the lineage gate holds, so the gate is not widened.
+Bytes are recorded only from live Claude and Codex events that name an absolute
+path, and only when they are the edit's own result: a Write's file equals its
+content and every line an Edit's diff adds is in the file (a failed or denied
+edit still arrives as a `likely_ai` file_diff), the file was written around the
+event (mtime from 5 s before to 2 s after it), and it did not change while read.
+A merge commit gets no content credit: its branch commits carry it. A credited
+file then feeds fingerprints and rework like any `likely_ai` file. Residuals:
+the recorded bytes are the whole file after the agent's edit, so uncommitted
+lines a person wrote there before it are credited with it (the path ledger's
+granularity), and a commit restoring bytes an agent once wrote is credited to
+it. Bytes reformatted after the edit (a formatter, a pre-commit hook) never
+match, an under-count.
+
 **THE GATE AND THE TOMBSTONE BOOKKEEPING READ THE SAME MARKS THROUGH TWO
 DIFFERENT VIEWS, and collapsing them is a live defect in both ledgers.**
 `resolveLedgerScope` (gated) is what may AUTHORIZE a seed. Everything that can

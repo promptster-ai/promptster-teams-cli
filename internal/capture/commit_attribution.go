@@ -136,15 +136,16 @@ var diffHunkRe = regexp.MustCompile(`^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@`)
 // the rework ledger has to see it or the renamed file's tracked spans strand at a
 // path that no longer exists. Only a failed `git show` yields an empty diff.
 func commitAttributionFromDiff(root, taskRoot, sha string, lin siblingLineage) (diff string, files []attrFile, primarySession string, ok bool) {
-	diff, files, primarySession, _, ok = commitAttributionWithDiag(root, taskRoot, sha, lin)
+	diff, files, primarySession, _, ok = commitAttributionWithDiag(root, taskRoot, sha, lin, true)
 	return diff, files, primarySession, ok
 }
 
 // commitAttributionWithDiag is commitAttributionFromDiff plus, for a commit no
 // file of which reached an AI session, WHY — classified from the very ledger
 // reads reconcile used, so the reason can't describe evidence attribution never
-// saw.
-func commitAttributionWithDiag(root, taskRoot, sha string, lin siblingLineage) (diff string, files []attrFile, primarySession string, diag unattributedDiag, ok bool) {
+// saw. matchContent enables the content pass; a caller that will discard the
+// result (a teammate's commit) skips its ledger read and git spawn.
+func commitAttributionWithDiag(root, taskRoot, sha string, lin siblingLineage, matchContent bool) (diff string, files []attrFile, primarySession string, diag unattributedDiag, ok bool) {
 	diff, ok = gitCommitRawDiff(root, sha)
 	if !ok || diff == "" {
 		return "", nil, "", diag, false
@@ -161,7 +162,11 @@ func commitAttributionWithDiag(root, taskRoot, sha string, lin siblingLineage) (
 	// key also keeps a same-named path AI-touched in a DIFFERENT repo from bleeding in.
 	scope := resolveLedgerScope(root, taskRoot, sha, lin)
 	aiPaths, windows := readAiTouchedPaths(scope.aiKey), readBashWindows(scope.aiKey)
-	files, _ = reconcileCommitAttribution(root, scope, fileRanges, aiPaths, windows)
+	var content *aiContentMatcher
+	if matchContent {
+		content = &aiContentMatcher{root: root, sha: sha}
+	}
+	files, _ = reconcileCommitAttribution(root, scope, fileRanges, aiPaths, windows, content)
 	applyDependencyAttribution(root, sha, files)
 	sessions := map[string]int{}
 	for _, f := range files {
@@ -249,7 +254,7 @@ func parseDiffNewPath(s string) string {
 // transcript ranges vs committed ranges is a later refinement — the transcript
 // ranges are pre-formatter and won't line up 1:1 with the committed lines
 // anyway, so path-level + committed-bytes is the defensible first cut.
-func reconcileCommitAttribution(root string, scope ledgerScope, fileRanges map[string][]attrLineRange, aiPaths map[string]string, bashWindows []bashWindow) (files []attrFile, primarySession string) {
+func reconcileCommitAttribution(root string, scope ledgerScope, fileRanges map[string][]attrLineRange, aiPaths map[string]string, bashWindows []bashWindow, content *aiContentMatcher) (files []attrFile, primarySession string) {
 	paths := make([]string, 0, len(fileRanges))
 	for p := range fileRanges {
 		paths = append(paths, p)
@@ -292,6 +297,13 @@ func reconcileCommitAttribution(root string, scope ledgerScope, fileRanges map[s
 			// never re-examined, so recovery can only fill holes, never override AI
 			// or emit human. A file whose working-tree mtime falls in an AI bash
 			// window is recovered to likely_ai, tagged with that bash session.
+			attribution = attributionLikelyAI
+			session = sid
+		} else if sid, ok := content.session(path); ok {
+			// CONTENT PASS, last and only for a file still unknown: the committed
+			// blob is byte-for-byte what an agent wrote to this path of this
+			// repository, in whatever checkout — one since removed, or a branch
+			// squashed into this SHA (see ai_content.go).
 			attribution = attributionLikelyAI
 			session = sid
 		}
@@ -555,7 +567,7 @@ func mostFrequentSession(counts map[string]int) string {
 // projector's element allowlist can walk. Assigning the struct straight to Data
 // would silently ship {} (see eventDataMap's header).
 func buildCommitAttributionEvent(session Session, root, sha string, lin siblingLineage) (event.Event, bool) {
-	diff, files, primarySession, diag, ok := commitAttributionWithDiag(root, session.TaskRoot, sha, lin)
+	diff, files, primarySession, diag, ok := commitAttributionWithDiag(root, session.TaskRoot, sha, lin, true)
 	if !ok {
 		return event.Event{}, false
 	}
@@ -672,7 +684,7 @@ func attributeCommit(session Session, root, sha string, nowMs int64, lin sibling
 // survives.
 func attributeAndReworkCommit(session Session, root, sha string, foldRework, foreign, aiOnly bool, nowMs int64, lin siblingLineage) (recordable, deferred bool) {
 	// Independent receipt also covers fixes that only delete lines.
-	diff, files, primarySession, diag, ok := commitAttributionWithDiag(root, session.TaskRoot, sha, lin)
+	diff, files, primarySession, diag, ok := commitAttributionWithDiag(root, session.TaskRoot, sha, lin, !foreign)
 	if ok && !foreign && aiOnly && primarySession == "" {
 		return true, true // off-HEAD, no local AI evidence: leave it to the HEAD pass
 	}

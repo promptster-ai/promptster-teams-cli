@@ -1891,6 +1891,11 @@ func tailClaudeTranscript(
 // from the environment. Keeping the two sourced separately is what stops them
 // collapsing back into one value.
 func queueClaudeWatchEvent(ev event.Event, session Session, captureProse bool) error {
+	// The agent's bytes, for a commit that later reaches the repository through
+	// a checkout the path ledger no longer names (ai_content.go). Before the
+	// paths are relativized: only a path the tool reported absolute names a
+	// file without guessing the agent's working directory.
+	recordAiContentFromEvent(&ev, transcriptEventIsHistorical(&ev))
 	ev.DeviceID = session.DeviceID
 	normalize.RelativizeEventPaths(&ev, session.TaskRoot)
 	// Record AI bash execution windows for later commit-attribution recovery
