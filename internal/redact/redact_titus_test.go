@@ -361,3 +361,26 @@ func TestTwoPassScrubKeepsTitusAttribution(t *testing.T) {
 		t.Fatalf("Shopify attribution lost across the two passes: %s", out)
 	}
 }
+
+// ScrubEvent is the only pass Titus gets for transcript sources, so it must see
+// the text as the raw record had it: json.Marshal's HTML escaping turns `&`
+// into &, and a Titus rule that needs the literal `&` stops matching.
+func TestScrubEventShowsTitusLiteralAmpersands(t *testing.T) {
+	if titusScanner() == nil {
+		t.Skip("titus scanner unavailable")
+	}
+	host := "redis-12345.c1.us-east-1-2.ec2.cloud.redislabs.com"
+	text := "connect to redis://default:p4ss&w0rdLong99@" + host + ":12345 now"
+	want := string(RedactBytes([]byte(text)))
+	if strings.Contains(want, host) {
+		t.Skip("titus no longer flags this host; pick another literal-& example")
+	}
+	ev := event.NewEvent("prompt", "sess-amp")
+	ev.Data = map[string]interface{}{"text": text}
+	ScrubEvent(&ev)
+	data, _ := ev.Data.(map[string]interface{})
+	got, _ := data["text"].(string)
+	if got == "" || strings.Contains(got, host) {
+		t.Fatalf("egress scrub missed what the raw pass caught: %q", got)
+	}
+}

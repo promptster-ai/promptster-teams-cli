@@ -48,8 +48,10 @@ import (
 // expresses the same rule as an explicit `val.startsWith('[REDACTED_')` check
 // because JS regex callbacks allow one.
 //
-// Every stage operates on raw JSON bytes (the hook + codex paths), so every
-// replacement must be JSON-safe: markers contain no quotes or backslashes,
+// Every stage operates on JSON bytes, so every replacement must be JSON-safe:
+// stage 1 on raw transcript records (RedactRawBytes), all three on the event
+// JSON ScrubEvent marshals at egress (with HTML escaping off, so a rule that
+// needs a literal `&`, `<` or `>` sees one, as it did on the raw records). markers contain no quotes or backslashes,
 // spans are narrowed to the secret token, and value matches stop at quotes —
 // so a match can never consume surrounding JSON structure.
 //
@@ -458,10 +460,17 @@ func ScrubEvent(ev *event.Event) {
 	if ev == nil {
 		return
 	}
-	raw, err := json.Marshal(ev)
-	if err != nil {
+	// HTML escaping off: json.Marshal would turn `&`, `<` and `>` into
+	// \u0026 / \u003c / \u003e, and Titus rules that need the literal
+	// character (a `&` in a connection string's query) would stop matching.
+	// For transcript sources this is the only pass Titus gets.
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(ev); err != nil {
 		return
 	}
+	raw := bytes.TrimSuffix(buf.Bytes(), []byte("\n"))
 	scrubbed := RedactBytes(raw)
 	if bytes.Equal(scrubbed, raw) {
 		return

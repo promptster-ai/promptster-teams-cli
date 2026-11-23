@@ -175,7 +175,8 @@ func runCursorHookInner() {
 	}
 
 	// Which Cursor login ran this turn (cursor-vendor-multi-account Phase A).
-	// Off the RAW payload, the one place the email is read. See
+	// Off the RAW payload. (`redacted` is stage 1 only and still holds the
+	// address too; the egress scrub masks it in any event field.) See
 	// cursorHookAccountRef for what is and is not kept.
 	if res.Step == "stop" {
 		if ref, ok := cursorHookAccountRef(raw); ok {

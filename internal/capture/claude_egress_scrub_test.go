@@ -58,7 +58,10 @@ func TestTitusOnlySecretIsScrubbedAtEgress(t *testing.T) {
 	if !strings.Contains(string(ledger), "[REDACTED:") {
 		t.Fatalf("egress scrub left no Titus marker: %s", ledger)
 	}
-	queued, _ := os.ReadFile(outboxPath)
+	queued, err := os.ReadFile(outboxPath)
+	if err != nil || len(queued) == 0 {
+		t.Fatalf("event not queued on the live lane, so the send-queue check would prove nothing: %v", err)
+	}
 	if strings.Contains(string(queued), secret) {
 		t.Fatalf("Titus-only secret reached the send queue: %s", queued)
 	}
