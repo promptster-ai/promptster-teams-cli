@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"sort"
 	"strings"
@@ -889,7 +890,9 @@ func pollClaudeTranscripts(
 		// Not while the processor holds a buffered message: the stale flush below
 		// mints it with the context window refreshed below, so that path keeps
 		// running exactly as before.
-		if offset, ok := progress.Offsets[key]; ok && c.size <= offset &&
+		//
+		// A size the walk couldn't vouch for (-1: a symlink, Windows) always reads.
+		if offset, ok := progress.Offsets[key]; ok && c.size >= 0 && c.size <= offset &&
 			(processors[key] == nil || !processors[key].HasBufferedState()) {
 			continue
 		}
@@ -1085,7 +1088,7 @@ func candidateClaudeTranscripts(historyCutoff time.Time) []string {
 
 // claudeTranscriptCandidate is one in-window transcript with the size the walk
 // already stat'ed, so the poll can tell an idle file from a grown one without
-// opening it.
+// opening it. size is -1 when the walk's stat can't be trusted for that.
 type claudeTranscriptCandidate struct {
 	path    string
 	size    int64
@@ -1106,7 +1109,15 @@ func claudeTranscriptCandidates(historyCutoff time.Time) []claudeTranscriptCandi
 		if info.ModTime().Before(historyCutoff) {
 			return nil
 		}
-		found = append(found, claudeTranscriptCandidate{path: path, size: info.Size(), modTime: info.ModTime()})
+		// The size is only kept when the walk's Lstat describes the bytes the
+		// tail will read: a regular file, off Windows. A symlink's Lstat size is
+		// the link's own length, and on Windows a file another process holds open
+		// for append can report a stale size. Unknown (-1) never skips.
+		size := int64(-1)
+		if info.Mode().IsRegular() && runtime.GOOS != "windows" {
+			size = info.Size()
+		}
+		found = append(found, claudeTranscriptCandidate{path: path, size: size, modTime: info.ModTime()})
 		return nil
 	})
 	// Path descending as the tie-break: mtime granularity can collide across
