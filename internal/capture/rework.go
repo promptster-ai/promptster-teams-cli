@@ -693,7 +693,8 @@ func foldReworkCommit(session Session, root, sha, diff string, files []attrFile,
 // author wrote still shifts the spans this root tracks, but passes no files, so it
 // can never SEED one — the same shape as the rename/delete-only case below.
 func replayReworkForAdoptedCommit(session Session, root, sha string, foreign bool, nowMs int64, lin siblingLineage) {
-	diff, files, _, ok := commitAttributionFromDiff(root, session.TaskRoot, sha, lin)
+	// A teammate's commit is discarded below, so it skips the content pass.
+	diff, files, _, _, ok := commitAttributionWithDiag(root, session.TaskRoot, sha, lin, !foreign)
 	if diff == "" {
 		return // nothing this commit can contribute (merge commit, empty diff)
 	}

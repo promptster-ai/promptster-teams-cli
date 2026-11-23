@@ -1088,6 +1088,11 @@ func tailCodexRollout(
 // prompt goes through the IDENTICAL path as every other event — same device
 // stamping, same path relativization, same signing.
 func emitCodexEvent(ev event.Event, session Session, captureProse bool) (int, error) {
+	// The agent's bytes, for a commit that later reaches the repository through
+	// a checkout the path ledger no longer names (ai_content.go). Before the
+	// paths are relativized: only a path the tool reported absolute names a
+	// file without guessing the agent's working directory.
+	recordAiContentFromEvent(&ev, transcriptEventIsHistorical(&ev))
 	// SessionID comes from the rollout; DeviceID comes from the environment.
 	// Stamped here rather than in the normalizer, which has no business knowing
 	// what machine it runs on — keeping the two sourced separately is what stops

@@ -6,6 +6,20 @@ follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- A commit an agent wrote in its own git worktree now reaches that agent's
+  session even after the worktree is removed, its branch is squashed into a new
+  SHA, or the commit is first seen in the main checkout after a pull. The CLI
+  now remembers the exact bytes each live Claude Code or Codex edit wrote (as a
+  git blob name, kept locally for 7 days and never sent), and a committed file
+  with those bytes at the same path of the same repository is credited to that
+  session. The bytes are recorded only when they are the edit's own result
+  (a failed or denied edit, or a save over it, records nothing). Different
+  bytes, a reformatted file, a merge commit, or another repository still read
+  as unknown. Codex's worktree-per-task flow left most of its commits with no
+  AI evidence.
+
 ## [0.43.0] — 2026-11-22
 
 ### Added
