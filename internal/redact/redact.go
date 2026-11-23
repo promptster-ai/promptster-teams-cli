@@ -13,7 +13,9 @@ import (
 	"github.com/promptster-ai/promptster-teams-cli/internal/state"
 )
 
-// Secret redaction runs in THREE ordered stages, all behind RedactBytes:
+// Secret redaction runs in THREE ordered stages, all behind RedactBytes. Raw
+// transcript records get stage 1 alone before parsing (RedactRawBytes); every
+// event then gets all three at egress (ScrubEvent):
 //
 //  1. vendorPatterns — precise, high-confidence provider shapes we own (AWS
 //     AKIA, GitHub ghp_/ghs_, Anthropic sk-ant-, OpenAI sk-/sk-proj-, Slack
@@ -275,28 +277,40 @@ func RedactBytes(input []byte) []byte {
 	return redactStages(input, true)
 }
 
-// RedactRawBytes is RedactBytes without Titus, for the pre-parse pass over raw
-// transcript records (Claude, Codex, Cursor tails and the Cursor hook).
+// RedactRawBytes is stage 1 (vendor shapes) only, for the pre-parse pass over
+// raw transcript records (Claude, Codex, Cursor tails and the Cursor hook).
 //
 // Those records carry file contents, command output and diffs that the field
 // allowlist drops before anything leaves the machine, and Titus's ~540
 // backtracking rules cost ~2 s of CPU per MB of them, fanned out across every
 // core for any record over 10 KB: on a busy machine that kept the daemon at
-// 60-180% CPU. Every event built from these records still gets the FULL scrub,
-// Titus included, at egress (ScrubEvent, after ProjectEvent), on the ~1 KB
-// projected event rather than the raw record. So nothing that leaves the
-// machine loses coverage; what changes is that a secret only Titus knows can
-// sit in local derived state the same way it already sits in the transcript on
+// 60-180% CPU. Every event built from these records still gets the FULL scrub
+// at egress (ScrubEvent, after ProjectEvent), on the ~1 KB projected event
+// rather than the raw record, so nothing that leaves the machine loses
+// coverage. What changes is that a secret only the later stages know can sit
+// in local derived state, the same way it already sits in the transcript on
 // that disk.
+//
+// Stage 1 ONLY, not stages 1 and 3: the stage order is what preserves
+// attribution, and it has to hold across the two passes. A generic KEY=value
+// or PII rule running here, before Titus has seen the value, would turn
+// `SHOPIFY_TOKEN=shpat_…` into a bare `[REDACTED]` (or rewrite the host inside
+// a DSN) and leave egress Titus nothing to name or match. Stage 1's markers are
+// already the most specific ones, so running it early costs nothing.
+//
+// A field a normalizer TRUNCATES must be fully scrubbed before the cut, or a
+// secret straddling it reaches egress as a fragment no rule matches; see
+// normalize.keptPreview.
 func RedactRawBytes(input []byte) []byte {
-	return redactStages(input, false)
-}
-
-func redactStages(input []byte, withTitus bool) []byte {
 	out := input
 	for _, p := range vendorPatterns {
 		out = p.re.ReplaceAll(out, []byte(p.replacement))
 	}
+	return out
+}
+
+func redactStages(input []byte, withTitus bool) []byte {
+	out := RedactRawBytes(input)
 	if withTitus {
 		out = titusRedact(out)
 	}
@@ -435,11 +449,11 @@ func titusRedact(input []byte) []byte {
 
 // scrubEvent redacts secrets from a fully-built Event by round-tripping it
 // through JSON. This is the defense-in-depth pass at the buffer/ingest choke
-// point: sources that build events from un-redacted text (shell hook commands,
-// decision/explain rationales) get scrubbed here, sources that already redact
-// their raw input (claude/cursor hooks, codex-watch, git watcher) pass through
-// unchanged. Must run BEFORE the event is signed — scrubbing after signing
-// would break chain verification.
+// point, and for transcript sources it is the ONLY pass that runs Titus and
+// the generic/PII rules: the Claude, Codex and Cursor tails and the Cursor hook
+// pre-scrub raw records with stage 1 alone (RedactRawBytes). Never skip it for
+// a source that "already redacts". Must run BEFORE the event is signed —
+// scrubbing after signing would break chain verification.
 func ScrubEvent(ev *event.Event) {
 	if ev == nil {
 		return

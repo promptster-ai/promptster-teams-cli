@@ -199,7 +199,7 @@ type CursorHookOptions struct {
 
 // NormalizeCursorHook turns one hook payload into events.
 //
-// `line` must already have been through redact.RedactBytes — the same
+// `line` must already have been through redact.RedactRawBytes — the same
 // raw-JSON-before-parse ordering the transcript rail uses.
 func NormalizeCursorHook(line []byte, opts CursorHookOptions) (CursorHookResult, bool) {
 	var p cursorHookPayload

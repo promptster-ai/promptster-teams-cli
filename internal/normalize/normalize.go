@@ -10,6 +10,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/promptster-ai/promptster-teams-cli/internal/event"
+	"github.com/promptster-ai/promptster-teams-cli/internal/redact"
 	"github.com/promptster-ai/promptster-teams-cli/internal/state"
 )
 
@@ -67,6 +68,19 @@ func strPreview(s string, n int) string {
 		n--
 	}
 	return s[:n] + "..."
+}
+
+// keptPreview is strPreview for a field the projection KEEPS (a summary that
+// leaves the machine). Raw records are pre-scrubbed with stage 1 only, and the
+// rest of the scrub runs on the finished event at egress; a cut through a
+// secret only those later stages know would leave a fragment none of them can
+// match. So when a cut will happen, scrub the whole value first. Text that
+// fits is left for egress, which sees it whole.
+func keptPreview(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return strPreview(string(redact.RedactBytes([]byte(s))), n)
 }
 
 // jsonPreview marshals v to JSON and returns the first n chars.
@@ -562,7 +576,7 @@ func normalizePostToolUseByTool(toolName string, toolInput, toolResponse map[str
 		data := map[string]interface{}{
 			// Description only — never `prompt`, which is the full delegated
 			// instruction and can carry anything the human typed.
-			"summary": strPreview(taskDesc, 100),
+			"summary": keptPreview(taskDesc, 100),
 		}
 		// WHICH agent was spun up ("Explore", "general-purpose", ...). A type name
 		// chosen from a registry, not free text, and the dimension any

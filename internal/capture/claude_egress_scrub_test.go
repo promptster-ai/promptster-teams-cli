@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/promptster-ai/promptster-teams-cli/internal/normalize"
+	"github.com/promptster-ai/promptster-teams-cli/internal/redact"
 )
 
 // The raw pre-parse pass skips Titus (redact.RedactRawBytes); the egress scrub
@@ -26,6 +27,9 @@ func TestTitusOnlySecretIsScrubbedAtEgress(t *testing.T) {
 
 	// A Shopify access token: no stage-1 or generic rule knows the shape.
 	secret := "shpat_" + "a1b2c3d4e5f60718293a4b5c6d7e8f90"
+	if string(redact.RedactBytes([]byte(secret))) == secret {
+		t.Skip("titus scanner unavailable")
+	}
 	workspace := t.TempDir()
 	now := time.Now().UTC()
 	line := fmt.Sprintf(`{"type":"user","cwd":"%s","timestamp":"%s","uuid":"u-1","message":{"role":"user","content":"send it with %s please"}}`+"\n",

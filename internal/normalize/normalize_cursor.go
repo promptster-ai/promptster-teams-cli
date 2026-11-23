@@ -540,7 +540,7 @@ func (p *CursorTranscriptProcessor) toolEvent(item cursorContentItem, offset int
 		data := map[string]interface{}{
 			// Description only — never `prompt`, which is the full delegated
 			// instruction and can carry anything the human typed.
-			"summary": strPreview(in.Description, 100),
+			"summary": keptPreview(in.Description, 100),
 		}
 		// Trim BEFORE testing: a whitespace-only subagent_type passes `!= ""`
 		// and then emits `name: ""`, which opens a nameless agent-type bucket

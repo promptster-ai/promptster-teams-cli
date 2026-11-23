@@ -994,7 +994,7 @@ func tailCodexRollout(
 		// Scrub secrets before parsing/ingest — same redaction the hook path
 		// applies. Rollout lines carry prompt text, command output, and file
 		// patches that may contain keys/tokens the candidate pasted or printed.
-		// Raw pass, no Titus: the full scrub runs at egress (redact.RedactRawBytes).
+		// Raw pass, stage 1 only: the full scrub runs at egress (redact.RedactRawBytes).
 		redacted := redact.RedactRawBytes(record)
 		for _, ev := range proc.Process(redacted) {
 			n, err := emit(ev)

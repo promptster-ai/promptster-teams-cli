@@ -327,9 +327,9 @@ func TestTitusHelperRulesAreHiddenUpstream(t *testing.T) {
 	}
 }
 
-// The raw pass is the cheap one: vendor and generic stages only. Pinned so a
-// refactor can't quietly put Titus back on raw records (the CPU cost) or take
-// it off the egress scrub (the coverage).
+// The raw pass is the cheap one: stage 1 only. Pinned so a refactor can't
+// quietly put Titus back on raw records (the CPU cost) or take it off the
+// egress scrub (the coverage).
 func TestRawPassSkipsTitusButEgressScrubKeepsIt(t *testing.T) {
 	if titusScanner() == nil {
 		t.Skip("titus scanner unavailable")
@@ -343,7 +343,21 @@ func TestRawPassSkipsTitusButEgressScrubKeepsIt(t *testing.T) {
 	if strings.Contains(raw, "Ab1Ab1") {
 		t.Fatalf("raw pass dropped the vendor stage: %s", raw)
 	}
-	if full := string(RedactBytes(in)); strings.Contains(full, secret) {
+	if full := string(RedactBytes([]byte(raw))); strings.Contains(full, secret) {
 		t.Fatalf("egress scrub lost Titus: %s", full)
+	}
+}
+
+// The two passes must keep the stage order end to end, or attribution is lost:
+// a generic KEY=value rule in the raw pass would mask a Titus-known value as a
+// bare [REDACTED] before egress Titus could name the vendor.
+func TestTwoPassScrubKeepsTitusAttribution(t *testing.T) {
+	if titusScanner() == nil {
+		t.Skip("titus scanner unavailable")
+	}
+	in := []byte("SHOPIFY_TOKEN=shpat_" + "a1b2c3d4e5f60718293a4b5c6d7e8f90")
+	out := string(RedactBytes(RedactRawBytes(in)))
+	if !strings.Contains(out, "[REDACTED:np.shopify") {
+		t.Fatalf("Shopify attribution lost across the two passes: %s", out)
 	}
 }

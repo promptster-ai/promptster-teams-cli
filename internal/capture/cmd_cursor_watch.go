@@ -814,8 +814,8 @@ func tailCursorTranscript(
 		// Scrub secrets BEFORE parsing — the same pre-parse pass the Codex
 		// watcher applies. A Cursor transcript carries prompt text, shell command
 		// bodies and file contents the agent wrote, any of which may hold a key
-		// the engineer pasted or a tool printed. Raw pass, no Titus: the full
-		// scrub runs at egress (redact.RedactRawBytes).
+		// the engineer pasted or a tool printed. Raw pass, stage 1 only: the
+		// full scrub runs at egress (redact.RedactRawBytes).
 		redacted := redact.RedactRawBytes([]byte(trimmed))
 		for _, ev := range proc.Process(redacted, lineOffset) {
 			if only != nil && !only[ev.Kind] && !isCursorTranscriptProse(ev) {
