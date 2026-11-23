@@ -1178,6 +1178,13 @@ func (p *ClaudeTranscriptProcessor) resolveToolResult(rec map[string]interface{}
 		return event.Event{}, false
 	}
 	ev.Source = "claude-code"
+	// A failed or denied edit still reads as a file_diff. Mark it, so nothing
+	// treats the file on disk as this edit's result (capture's ai-content ledger).
+	if isErr && ev.Kind == "file_diff" {
+		if d, ok := ev.Data.(map[string]interface{}); ok {
+			d[ToolFailedKey] = true
+		}
+	}
 	// tool_use_id is unique per tool call and stable across re-reads / forked
 	// transcripts, so derive a deterministic id from it (the normalizer minted a
 	// random one). One tool_use resolves to exactly one event.

@@ -1138,6 +1138,12 @@ func (p *CodexRolloutProcessor) patchApplyEnd(payload map[string]interface{}, ts
 		if mv := stringField(change, "move_path"); mv != "" {
 			data["movePath"] = mv
 		}
+		// One success flag covers the whole patch, so a failure marks every file
+		// in it: an under-credit for any file written before the failure, on
+		// purpose — the flag cannot say which landed.
+		if ok, isBool := payload["success"].(bool); isBool && !ok {
+			data[ToolFailedKey] = true // see ToolFailedKey
+		}
 		e.Data = data
 		e.RawPayload = strPreview(diff, 500)
 		events = append(events, e)

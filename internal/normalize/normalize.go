@@ -268,6 +268,12 @@ func taskStatusFromResponse(toolResponse map[string]interface{}) (string, bool) 
 	return to, true
 }
 
+// ToolFailedKey marks a file_diff whose tool reported failure (Claude is_error,
+// Codex patch_apply_end success=false): the event still describes the edit the
+// agent proposed, but the file on disk is not its result. Local only: it is not
+// in the capture allowlist, so projection drops it before anything is sent.
+const ToolFailedKey = "toolFailed"
+
 // normalizePostToolUseByTool converts a PostToolUse/postToolUse payload into a
 // rich, tool-specific Event. Shared between Claude Code and Cursor normalizers.
 func normalizePostToolUseByTool(toolName string, toolInput, toolResponse map[string]interface{}, sessionID, raw string) (event.Event, bool) {

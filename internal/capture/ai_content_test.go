@@ -10,6 +10,7 @@ import (
 
 	"github.com/promptster-ai/promptster-teams-cli/internal/event"
 	"github.com/promptster-ai/promptster-teams-cli/internal/normalize"
+	"github.com/promptster-ai/promptster-teams-cli/internal/redact"
 )
 
 // aiWrite writes content to home/rel and observes it as the Claude and Codex
@@ -190,6 +191,30 @@ func TestEditWhoseLinesAreMissingRecordsNoContent(t *testing.T) {
 	}
 }
 
+// Greptile's case: a failed replacement whose new line (`return nil`) already
+// appears elsewhere in a file a person just saved. The lines are present, but
+// the tool said it failed, so nothing is recorded.
+func TestFailedEditRecordsNoContentEvenWhenItsLinesArePresent(t *testing.T) {
+	t.Setenv("PROMPTSTER_STATE_DIR", t.TempDir())
+	home := t.TempDir()
+	git, _ := gitRepoAt(t, filepath.Join(home, "repo"))
+	git("commit", "--allow-empty", "-m", "base")
+	writeCommitFile(t, home, "repo/a.go", "package a\n\nfunc f() error {\n\treturn nil\n}\n")
+	data := map[string]interface{}{"diff": "--- a/a.go\n+++ b/a.go\n@@ -1 +1 @@\n-x\n+\treturn nil\n"}
+	aiObservePath(home, filepath.Join(home, "repo/a.go"), "sess", data, time.Now(), false)
+	if n := len(readAiContentLedger().Entries); n != 1 {
+		t.Fatalf("setup: a successful edit with these lines recorded %d entries, want 1", n)
+	}
+	if err := os.Remove(aiContentLedgerPath()); err != nil {
+		t.Fatal(err)
+	}
+	data = map[string]interface{}{"diff": data["diff"], normalize.ToolFailedKey: true}
+	aiObservePath(home, filepath.Join(home, "repo/a.go"), "sess", data, time.Now(), false)
+	if n := len(readAiContentLedger().Entries); n != 0 {
+		t.Fatalf("a failed edit recorded %d content entries, want 0", n)
+	}
+}
+
 func TestAiEditLanded(t *testing.T) {
 	file := []byte("package a\r\n\nvar Agent = 2\n")
 	diff := func(lines ...string) map[string]interface{} {
@@ -249,15 +274,16 @@ func TestAiContentLedgerPrunesByAgeThenSlotThenCap(t *testing.T) {
 	l := aiContentLedger{V: aiContentLedgerVersion, Entries: map[string]aiContentEntry{
 		"stale": {SessionID: "s", TsMs: now - aiPathsTTL.Milliseconds() - 1, Slot: "x"},
 	}}
-	// One path saved six times: only its four newest versions stay.
-	for i := 0; i < 6; i++ {
+	// One path saved past the per-path limit: only its newest versions stay.
+	versions := aiContentVersionsKept + 3
+	for i := 0; i < versions; i++ {
 		l.Entries[fmt.Sprint("busy", i)] = aiContentEntry{SessionID: "s", TsMs: now - int64(i), Slot: "busy"}
 	}
 	pruneAiContent(&l, now)
 	if _, ok := l.Entries["stale"]; ok {
 		t.Fatal("an entry past the TTL survived")
 	}
-	for i := 0; i < 6; i++ {
+	for i := 0; i < versions; i++ {
 		if _, ok := l.Entries[fmt.Sprint("busy", i)]; ok != (i < aiContentVersionsKept) {
 			t.Fatalf("version %d kept = %v, want %v", i, ok, i < aiContentVersionsKept)
 		}
@@ -279,5 +305,20 @@ func TestGitBlobOIDMatchesGit(t *testing.T) {
 	// `git hash-object` of "hello\n".
 	if got := gitBlobOID([]byte("hello\n")); got != "ce013625030ba8dba906f756967f9e9ca394464a" {
 		t.Fatalf("gitBlobOID = %s", got)
+	}
+}
+
+// The failure mark is local: projection drops it before anything is sent.
+func TestToolFailedMarkIsNeverSent(t *testing.T) {
+	ev := event.Event{Kind: "file_diff", SessionID: "s", Data: map[string]interface{}{
+		"path": "a.go", "linesAdded": 1, normalize.ToolFailedKey: true,
+	}}
+	redact.ProjectEvent(&ev, false)
+	d, _ := ev.Data.(map[string]interface{})
+	if _, ok := d[normalize.ToolFailedKey]; ok {
+		t.Fatalf("%s survived projection: %v", normalize.ToolFailedKey, d)
+	}
+	if d["linesAdded"] == nil {
+		t.Fatalf("projection dropped an allowlisted field too, so this test checks nothing: %v", d)
 	}
 }
