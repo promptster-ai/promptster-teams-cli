@@ -6,8 +6,21 @@ follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.44.0] — 2026-11-23
+
 ### Fixed
 
+- The capture daemon no longer burns CPU on a busy machine. Secret redaction
+  ran Titus's ~540 rules over every raw transcript record, about 2 s of CPU
+  per MB spread across every core, which kept the daemon at 60-180% CPU and
+  drained laptop batteries. Raw records now get the fast provider-shape rules
+  only, and the full scrub, Titus included, runs once on each event before it
+  is signed and sent, which is about 1 KB rather than the whole record. Nothing
+  that leaves the machine loses coverage. Redaction CPU fell about 6x on a
+  heavy real workload.
+- The Claude Code watcher no longer reopens every transcript every 3 seconds:
+  a transcript with nothing new since the last read is skipped. A new install
+  still reads the full history window.
 - A commit an agent wrote in its own git worktree now reaches that agent's
   session even after the worktree is removed, its branch is squashed into a new
   SHA, or the commit is first seen in the main checkout after a pull. The CLI
