@@ -1,6 +1,7 @@
 package normalize
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -74,13 +75,26 @@ func strPreview(s string, n int) string {
 // leaves the machine). Raw records are pre-scrubbed with stage 1 only, and the
 // rest of the scrub runs on the finished event at egress; a cut through a
 // secret only those later stages know would leave a fragment none of them can
-// match. So when a cut will happen, scrub the whole value first. Text that
-// fits is left for egress, which sees it whole.
+// match. So when a cut will happen, scrub the whole value first, in its JSON
+// form, which is what egress scrubs (quote- and newline-bounded rules behave
+// differently on escaped text). Text that fits is left for egress, which sees
+// it whole.
 func keptPreview(s string, n int) string {
 	if len(s) <= n {
 		return s
 	}
-	return strPreview(string(redact.RedactBytes([]byte(s))), n)
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false) // as ScrubEvent does
+	if err := enc.Encode(s); err != nil {
+		return ""
+	}
+	var scrubbed string
+	if err := json.Unmarshal(redact.RedactBytes(bytes.TrimSpace(buf.Bytes())), &scrubbed); err != nil {
+		// Redaction broke the JSON string: fail closed, as ScrubEvent does.
+		return "[REDACTED]"
+	}
+	return strPreview(scrubbed, n)
 }
 
 // jsonPreview marshals v to JSON and returns the first n chars.

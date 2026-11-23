@@ -284,6 +284,10 @@ type ClaudeTranscriptProcessor struct {
 	// sidechain prose. Held raw here and capped on emit, so the length rule
 	// lives in exactly one place.
 	Summary string
+
+	// summaryPreview is keptPreview(Summary, 100), cached for the value in
+	// summaryPreviewOf.
+	summaryPreviewOf, summaryPreview string
 	// Interrupt tracking. Claude Code writes a synthetic user line
 	// ([Request interrupted by user] / ...for tool use) when the developer hits
 	// ESC/Ctrl+C mid-response. We classify what was cut POSITIONALLY from the
@@ -571,7 +575,12 @@ func (p *ClaudeTranscriptProcessor) flushSidechain(a *claudeMsgAccum) []event.Ev
 	if p.Summary != "" {
 		// Capped HERE, with the same helper task_dispatch uses on the identical
 		// string, so one label cannot ship at two lengths from two producers.
-		data["summary"] = keptPreview(p.Summary, 100)
+		// Cached per value: keptPreview runs the full scrub (Titus included)
+		// when a cut happens, and a lane flushes this on every message.
+		if p.summaryPreviewOf != p.Summary {
+			p.summaryPreviewOf, p.summaryPreview = p.Summary, keptPreview(p.Summary, 100)
+		}
+		data["summary"] = p.summaryPreview
 	}
 	e.Data = data
 	e.RawPayload = strPreview(fmt.Sprintf("subagent usage msg=%s", msgID), 100)

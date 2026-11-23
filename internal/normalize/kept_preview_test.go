@@ -24,3 +24,12 @@ func TestKeptPreviewScrubsBeforeTheCut(t *testing.T) {
 		t.Fatalf("text that fits must be left for egress untouched: %q", short)
 	}
 }
+
+// Scrubbed in its JSON form, as egress sees it: a quoted assignment straddling
+// the cut must not leave a fragment of its value.
+func TestKeptPreviewScrubsQuotedAssignmentBeforeTheCut(t *testing.T) {
+	desc := strings.Repeat("x", 80) + ` PASSWORD="hunter2-long-secret-value" then deploy`
+	if got := keptPreview(desc, 100); strings.Contains(got, "hunter") {
+		t.Fatalf("a fragment of the quoted value survived the cut: %q", got)
+	}
+}

@@ -51,9 +51,10 @@ import (
 // Every stage operates on JSON bytes, so every replacement must be JSON-safe:
 // stage 1 on raw transcript records (RedactRawBytes), all three on the event
 // JSON ScrubEvent marshals at egress (with HTML escaping off, so a rule that
-// needs a literal `&`, `<` or `>` sees one, as it did on the raw records). markers contain no quotes or backslashes,
-// spans are narrowed to the secret token, and value matches stop at quotes —
-// so a match can never consume surrounding JSON structure.
+// needs a literal `&`, `<` or `>` sees one, as it did on the raw records).
+// Markers contain no quotes or backslashes, spans are narrowed to the secret
+// token, and value matches stop at quotes — so a match can never consume
+// surrounding JSON structure.
 //
 // Deliberately NOT here: a blunt entropy catch-all or a digit-run credit-card
 // pass. Both ran on the raw line before the normalizers parse it — the entropy
