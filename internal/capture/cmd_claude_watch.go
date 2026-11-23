@@ -1766,8 +1766,10 @@ func tailClaudeTranscript(
 		}
 		// Scrub secrets BEFORE parsing and before anything is persisted or
 		// queued — transcript lines carry prompt text, command output, and file
-		// content. This ordering is load-bearing; do not move it.
-		redacted := redact.RedactBytes(record)
+		// content. This ordering is load-bearing; do not move it. The raw pass
+		// skips Titus; every event built here gets the full scrub at egress
+		// (see redact.RedactRawBytes).
+		redacted := redact.RedactRawBytes(record)
 		for _, ev := range proc.Process(redacted) {
 			parsed++
 			if dryRun {

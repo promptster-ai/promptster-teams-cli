@@ -705,7 +705,7 @@ func replayCodexRolloutPrefix(path string, offset int64, proc *normalize.CodexRo
 		if len(line) > 0 && line[len(line)-1] == '\n' {
 			trimmed := strings.TrimSpace(string(line))
 			if trimmed != "" {
-				_ = proc.Process(redact.RedactBytes([]byte(trimmed)))
+				_ = proc.Process(redact.RedactRawBytes([]byte(trimmed)))
 			}
 		}
 		if err != nil {
@@ -994,7 +994,8 @@ func tailCodexRollout(
 		// Scrub secrets before parsing/ingest — same redaction the hook path
 		// applies. Rollout lines carry prompt text, command output, and file
 		// patches that may contain keys/tokens the candidate pasted or printed.
-		redacted := redact.RedactBytes(record)
+		// Raw pass, no Titus: the full scrub runs at egress (redact.RedactRawBytes).
+		redacted := redact.RedactRawBytes(record)
 		for _, ev := range proc.Process(redacted) {
 			n, err := emit(ev)
 			queued += n

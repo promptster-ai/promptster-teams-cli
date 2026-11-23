@@ -131,7 +131,8 @@ func runCursorHookInner() {
 	// is routinely wrong". Same failure, same fix, one rail later.
 	session.TaskRoot = cursorHookTaskRoot(session.TaskRoot)
 
-	redacted := redact.RedactBytes(raw)
+	// Raw pass, no Titus: the full scrub runs at egress (redact.RedactRawBytes).
+	redacted := redact.RedactRawBytes(raw)
 	if captureDependencyHook(redacted) {
 		return
 	}

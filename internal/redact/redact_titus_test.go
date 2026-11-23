@@ -326,3 +326,24 @@ func TestTitusHelperRulesAreHiddenUpstream(t *testing.T) {
 		}
 	}
 }
+
+// The raw pass is the cheap one: vendor and generic stages only. Pinned so a
+// refactor can't quietly put Titus back on raw records (the CPU cost) or take
+// it off the egress scrub (the coverage).
+func TestRawPassSkipsTitusButEgressScrubKeepsIt(t *testing.T) {
+	if titusScanner() == nil {
+		t.Skip("titus scanner unavailable")
+	}
+	const secret = "shpat_" + "a1b2c3d4e5f60718293a4b5c6d7e8f90" // Titus-only shape
+	in := []byte("send it with " + secret + " and ANTHROPIC_API_KEY=sk-" + "ant-api03-" + strings.Repeat("Ab1", 30))
+	raw := string(RedactRawBytes(in))
+	if !strings.Contains(raw, secret) {
+		t.Fatalf("raw pass ran Titus: %s", raw)
+	}
+	if strings.Contains(raw, "Ab1Ab1") {
+		t.Fatalf("raw pass dropped the vendor stage: %s", raw)
+	}
+	if full := string(RedactBytes(in)); strings.Contains(full, secret) {
+		t.Fatalf("egress scrub lost Titus: %s", full)
+	}
+}

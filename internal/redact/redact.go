@@ -267,12 +267,39 @@ func titusScanner() *scanner.Core {
 // documented at the top of this file: precise vendor shapes, then Titus's wide
 // net, then shape-blind generic fallbacks. The order is what preserves vendor
 // ATTRIBUTION in the marker; see that header before reordering anything.
+//
+// This is the egress scrub: ScrubEvent runs it on every event at the choke
+// point (sign.AppendEventToLocalBuffer) before anything is signed, buffered or
+// queued. Raw transcript records use RedactRawBytes instead.
 func RedactBytes(input []byte) []byte {
+	return redactStages(input, true)
+}
+
+// RedactRawBytes is RedactBytes without Titus, for the pre-parse pass over raw
+// transcript records (Claude, Codex, Cursor tails and the Cursor hook).
+//
+// Those records carry file contents, command output and diffs that the field
+// allowlist drops before anything leaves the machine, and Titus's ~540
+// backtracking rules cost ~2 s of CPU per MB of them, fanned out across every
+// core for any record over 10 KB: on a busy machine that kept the daemon at
+// 60-180% CPU. Every event built from these records still gets the FULL scrub,
+// Titus included, at egress (ScrubEvent, after ProjectEvent), on the ~1 KB
+// projected event rather than the raw record. So nothing that leaves the
+// machine loses coverage; what changes is that a secret only Titus knows can
+// sit in local derived state the same way it already sits in the transcript on
+// that disk.
+func RedactRawBytes(input []byte) []byte {
+	return redactStages(input, false)
+}
+
+func redactStages(input []byte, withTitus bool) []byte {
 	out := input
 	for _, p := range vendorPatterns {
 		out = p.re.ReplaceAll(out, []byte(p.replacement))
 	}
-	out = titusRedact(out)
+	if withTitus {
+		out = titusRedact(out)
+	}
 	for _, p := range genericPatterns {
 		// Stage 3 is shape-blind, so it must not touch a value the attributed
 		// stages above already marked — see alreadyRedactedValue. Rules whose
