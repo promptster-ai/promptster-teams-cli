@@ -63,8 +63,9 @@ const cursorHookStdout = `{"continue": true, "permission": "allow"}`
 //     ingest endpoint's latency — and its outages — directly into the engineer's
 //     agent loop.
 //
-//  3. IT REDACTS BEFORE IT PARSES. redact.RedactBytes runs on the raw payload,
-//     matching the raw-JSON-before-parse ordering the other rails use. The
+//  3. IT REDACTS BEFORE IT PARSES. redact.RedactRawBytes runs on the raw
+//     payload, matching the raw-JSON-before-parse ordering the other rails use;
+//     the full scrub (Titus, generic, PII) runs on each event at egress. The
 //     payload contains file bodies, command output and the engineer's email
 //     address; parsing first would mean a struct field holding a secret before
 //     anything had a chance to scrub it.
@@ -131,7 +132,9 @@ func runCursorHookInner() {
 	// is routinely wrong". Same failure, same fix, one rail later.
 	session.TaskRoot = cursorHookTaskRoot(session.TaskRoot)
 
-	redacted := redact.RedactBytes(raw)
+	// Raw pass, stage 1 only: the full scrub runs at egress
+	// (redact.ScrubEvent; see redact.RedactRawBytes for why).
+	redacted := redact.RedactRawBytes(raw)
 	if captureDependencyHook(redacted) {
 		return
 	}
@@ -173,8 +176,9 @@ func runCursorHookInner() {
 	}
 
 	// Which Cursor login ran this turn (cursor-vendor-multi-account Phase A).
-	// Off the RAW payload: redaction has already rewritten the email in
-	// `redacted`. See cursorHookAccountRef for what is and is not kept.
+	// Off the RAW payload. (`redacted` is stage 1 only and still holds the
+	// address too; the egress scrub masks it in any event field.) See
+	// cursorHookAccountRef for what is and is not kept.
 	if res.Step == "stop" {
 		if ref, ok := cursorHookAccountRef(raw); ok {
 			stampCursorAccountRef(res.Events, ref)

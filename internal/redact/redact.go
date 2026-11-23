@@ -13,7 +13,9 @@ import (
 	"github.com/promptster-ai/promptster-teams-cli/internal/state"
 )
 
-// Secret redaction runs in THREE ordered stages, all behind RedactBytes:
+// Secret redaction runs in THREE ordered stages, all behind RedactBytes. Raw
+// transcript records get stage 1 alone before parsing (RedactRawBytes); every
+// event then gets all three at egress (ScrubEvent):
 //
 //  1. vendorPatterns — precise, high-confidence provider shapes we own (AWS
 //     AKIA, GitHub ghp_/ghs_, Anthropic sk-ant-, OpenAI sk-/sk-proj-, Slack
@@ -46,10 +48,13 @@ import (
 // expresses the same rule as an explicit `val.startsWith('[REDACTED_')` check
 // because JS regex callbacks allow one.
 //
-// Every stage operates on raw JSON bytes (the hook + codex paths), so every
-// replacement must be JSON-safe: markers contain no quotes or backslashes,
-// spans are narrowed to the secret token, and value matches stop at quotes —
-// so a match can never consume surrounding JSON structure.
+// Every stage operates on JSON bytes, so every replacement must be JSON-safe:
+// stage 1 on raw transcript records (RedactRawBytes), all three on the event
+// JSON ScrubEvent marshals at egress (with HTML escaping off, so a rule that
+// needs a literal `&`, `<` or `>` sees one, as it did on the raw records).
+// Markers contain no quotes or backslashes, spans are narrowed to the secret
+// token, and value matches stop at quotes — so a match can never consume
+// surrounding JSON structure.
 //
 // Deliberately NOT here: a blunt entropy catch-all or a digit-run credit-card
 // pass. Both ran on the raw line before the normalizers parse it — the entropy
@@ -267,12 +272,51 @@ func titusScanner() *scanner.Core {
 // documented at the top of this file: precise vendor shapes, then Titus's wide
 // net, then shape-blind generic fallbacks. The order is what preserves vendor
 // ATTRIBUTION in the marker; see that header before reordering anything.
+//
+// This is the egress scrub: ScrubEvent runs it on every event at the choke
+// point (sign.AppendEventToLocalBuffer) before anything is signed, buffered or
+// queued. Raw transcript records use RedactRawBytes instead.
 func RedactBytes(input []byte) []byte {
+	return redactStages(input, true)
+}
+
+// RedactRawBytes is stage 1 (vendor shapes) only, for the pre-parse pass over
+// raw transcript records (Claude, Codex, Cursor tails and the Cursor hook).
+//
+// Those records carry file contents, command output and diffs that the field
+// allowlist drops before anything leaves the machine, and Titus's ~540
+// backtracking rules cost ~2 s of CPU per MB of them, fanned out across every
+// core for any record over 10 KB: on a busy machine that kept the daemon at
+// 60-180% CPU. Every event built from these records still gets the FULL scrub
+// at egress (ScrubEvent, after ProjectEvent), on the ~1 KB projected event
+// rather than the raw record, so nothing that leaves the machine loses
+// coverage. What changes is that a secret only the later stages know can sit
+// in local derived state, the same way it already sits in the transcript on
+// that disk.
+//
+// Stage 1 ONLY, not stages 1 and 3: the stage order is what preserves
+// attribution, and it has to hold across the two passes. A generic KEY=value
+// or PII rule running here, before Titus has seen the value, would turn
+// `SHOPIFY_TOKEN=shpat_…` into a bare `[REDACTED]` (or rewrite the host inside
+// a DSN) and leave egress Titus nothing to name or match. Stage 1's markers are
+// already the most specific ones, so running it early costs nothing.
+//
+// A field a normalizer TRUNCATES must be fully scrubbed before the cut, or a
+// secret straddling it reaches egress as a fragment no rule matches; see
+// normalize.keptPreview.
+func RedactRawBytes(input []byte) []byte {
 	out := input
 	for _, p := range vendorPatterns {
 		out = p.re.ReplaceAll(out, []byte(p.replacement))
 	}
-	out = titusRedact(out)
+	return out
+}
+
+func redactStages(input []byte, withTitus bool) []byte {
+	out := RedactRawBytes(input)
+	if withTitus {
+		out = titusRedact(out)
+	}
 	for _, p := range genericPatterns {
 		// Stage 3 is shape-blind, so it must not touch a value the attributed
 		// stages above already marked — see alreadyRedactedValue. Rules whose
@@ -408,19 +452,26 @@ func titusRedact(input []byte) []byte {
 
 // scrubEvent redacts secrets from a fully-built Event by round-tripping it
 // through JSON. This is the defense-in-depth pass at the buffer/ingest choke
-// point: sources that build events from un-redacted text (shell hook commands,
-// decision/explain rationales) get scrubbed here, sources that already redact
-// their raw input (claude/cursor hooks, codex-watch, git watcher) pass through
-// unchanged. Must run BEFORE the event is signed — scrubbing after signing
-// would break chain verification.
+// point, and for transcript sources it is the ONLY pass that runs Titus and
+// the generic/PII rules: the Claude, Codex and Cursor tails and the Cursor hook
+// pre-scrub raw records with stage 1 alone (RedactRawBytes). Never skip it for
+// a source that "already redacts". Must run BEFORE the event is signed —
+// scrubbing after signing would break chain verification.
 func ScrubEvent(ev *event.Event) {
 	if ev == nil {
 		return
 	}
-	raw, err := json.Marshal(ev)
-	if err != nil {
+	// HTML escaping off: json.Marshal would turn `&`, `<` and `>` into
+	// \u0026 / \u003c / \u003e, and Titus rules that need the literal
+	// character (a `&` in a connection string's query) would stop matching.
+	// For transcript sources this is the only pass Titus gets.
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(ev); err != nil {
 		return
 	}
+	raw := bytes.TrimSuffix(buf.Bytes(), []byte("\n"))
 	scrubbed := RedactBytes(raw)
 	if bytes.Equal(scrubbed, raw) {
 		return

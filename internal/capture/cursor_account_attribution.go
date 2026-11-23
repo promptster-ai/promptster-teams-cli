@@ -139,11 +139,11 @@ func loadCursorAccountLogins() cursorAccountLogins {
 
 // cursorHookAccountRef derives `cursorAccountRef` for one `stop` payload.
 //
-// It takes the RAW payload, not the redacted one, and that is forced rather
-// than chosen: redact.RedactBytes rewrites every email address to
-// [REDACTED_EMAIL] before normalization, so the redacted bytes cannot be
-// matched. It decodes exactly one key, holds the address only long enough to
-// HMAC it, and returns a value that cannot contain it.
+// It takes the RAW payload, not a redacted one: redaction rewrites every email
+// address to [REDACTED_EMAIL] (at egress; the raw pre-parse pass is stage 1
+// only), so the address must be read before any of that. It decodes exactly
+// one key, holds the address only long enough to HMAC it, and returns a value
+// that cannot contain it.
 //
 // ok=false (field omitted) when the payload has no user_email, when there is no
 // usable login map (never collected, or the collector was switched off), or

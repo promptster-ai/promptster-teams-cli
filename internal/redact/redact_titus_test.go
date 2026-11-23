@@ -326,3 +326,61 @@ func TestTitusHelperRulesAreHiddenUpstream(t *testing.T) {
 		}
 	}
 }
+
+// The raw pass is the cheap one: stage 1 only. Pinned so a refactor can't
+// quietly put Titus back on raw records (the CPU cost) or take it off the
+// egress scrub (the coverage).
+func TestRawPassSkipsTitusButEgressScrubKeepsIt(t *testing.T) {
+	if titusScanner() == nil {
+		t.Skip("titus scanner unavailable")
+	}
+	const secret = "shpat_" + "a1b2c3d4e5f60718293a4b5c6d7e8f90" // Titus-only shape
+	in := []byte("send it with " + secret + " and ANTHROPIC_API_KEY=sk-" + "ant-api03-" + strings.Repeat("Ab1", 30))
+	raw := string(RedactRawBytes(in))
+	if !strings.Contains(raw, secret) {
+		t.Fatalf("raw pass ran Titus: %s", raw)
+	}
+	if strings.Contains(raw, "Ab1Ab1") {
+		t.Fatalf("raw pass dropped the vendor stage: %s", raw)
+	}
+	if full := string(RedactBytes([]byte(raw))); strings.Contains(full, secret) {
+		t.Fatalf("egress scrub lost Titus: %s", full)
+	}
+}
+
+// The two passes must keep the stage order end to end, or attribution is lost:
+// a generic KEY=value rule in the raw pass would mask a Titus-known value as a
+// bare [REDACTED] before egress Titus could name the vendor.
+func TestTwoPassScrubKeepsTitusAttribution(t *testing.T) {
+	if titusScanner() == nil {
+		t.Skip("titus scanner unavailable")
+	}
+	in := []byte("SHOPIFY_TOKEN=shpat_" + "a1b2c3d4e5f60718293a4b5c6d7e8f90")
+	out := string(RedactBytes(RedactRawBytes(in)))
+	if !strings.Contains(out, "[REDACTED:np.shopify") {
+		t.Fatalf("Shopify attribution lost across the two passes: %s", out)
+	}
+}
+
+// ScrubEvent is the only pass Titus gets for transcript sources, so it must see
+// the text as the raw record had it: json.Marshal's HTML escaping turns `&`
+// into &, and a Titus rule that needs the literal `&` stops matching.
+func TestScrubEventShowsTitusLiteralAmpersands(t *testing.T) {
+	if titusScanner() == nil {
+		t.Skip("titus scanner unavailable")
+	}
+	host := "redis-12345.c1.us-east-1-2.ec2.cloud.redislabs.com"
+	text := "connect to redis://default:p4ss&w0rdLong99@" + host + ":12345 now"
+	want := string(RedactBytes([]byte(text)))
+	if strings.Contains(want, host) {
+		t.Skip("titus no longer flags this host; pick another literal-& example")
+	}
+	ev := event.NewEvent("prompt", "sess-amp")
+	ev.Data = map[string]interface{}{"text": text}
+	ScrubEvent(&ev)
+	data, _ := ev.Data.(map[string]interface{})
+	got, _ := data["text"].(string)
+	if got == "" || strings.Contains(got, host) {
+		t.Fatalf("egress scrub missed what the raw pass caught: %q", got)
+	}
+}
