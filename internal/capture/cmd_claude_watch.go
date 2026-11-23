@@ -800,13 +800,14 @@ func pollClaudeTranscripts(
 		saveClaudeWatchProgress(progress)
 	}
 
-	candidates := candidateClaudeTranscripts(historyCutoff)
+	candidates := claudeTranscriptCandidates(historyCutoff)
 	liveKeys := make(map[string]bool, len(candidates))
-	for _, path := range candidates {
-		liveKeys[claudeProgressKey(path)] = true
+	for _, c := range candidates {
+		liveKeys[claudeProgressKey(c.path)] = true
 	}
 
-	for _, path := range candidates {
+	for _, c := range candidates {
+		path := c.path
 		key := claudeProgressKey(path)
 		switch progress.Match[key] {
 		case "no":
@@ -874,6 +875,25 @@ func pollClaudeTranscripts(
 			}
 		}
 
+		// NOTHING NEW ON DISK: skip the open. Most matched transcripts are idle on
+		// any given poll, and opening, seeking and re-reading the context spool
+		// for each one every 3s was most of the daemon's idle CPU.
+		//
+		// Only when an offset is RECORDED and the walk's size is at or below it.
+		// A transcript never tailed (a fresh install's backfill, a new session)
+		// has no offset and is always read from wherever it starts; one mid-
+		// backfill has offset < size and keeps reading. A size below the offset
+		// (a shorter alias, a rewritten file) read nothing before this either:
+		// the seek lands past EOF.
+		//
+		// Not while the processor holds a buffered message: the stale flush below
+		// mints it with the context window refreshed below, so that path keeps
+		// running exactly as before.
+		if offset, ok := progress.Offsets[key]; ok && c.size <= offset &&
+			(processors[key] == nil || !processors[key].HasBufferedState()) {
+			continue
+		}
+
 		if budget <= 0 {
 			// Budget spent: leave this transcript's offset untouched so every
 			// unread byte re-surfaces next poll. Deferred, never dropped. Skipped
@@ -916,8 +936,10 @@ func pollClaudeTranscripts(
 			// tell us", not as "we looked too early".
 			//
 			// So retry while it is still missing, and stop the moment it is not.
-			// A lane that never gets a sidecar costs one failed os.Open per poll,
-			// which is the price of not guessing which side of the race we are on.
+			// A lane that never gets a sidecar costs one failed os.Open per poll
+			// that has new bytes for it (an idle lane is skipped above, and the
+			// label is only read into events built from new bytes), which is the
+			// price of not guessing which side of the race we are on.
 			proc.Summary = claudeSidecarDescription(path)
 		}
 		n, res := tailClaudeTranscript(path, progress, proc, session, dryRun, captureProse, budget, oversizeProbe)
@@ -1053,11 +1075,27 @@ func pollClaudeTranscripts(
 // Mirrors the candidate ordering in pollCodexRollouts — both watchers hold the
 // identical invariant.
 func candidateClaudeTranscripts(historyCutoff time.Time) []string {
-	type candidate struct {
-		path    string
-		modTime time.Time
+	found := claudeTranscriptCandidates(historyCutoff)
+	out := make([]string, 0, len(found))
+	for _, c := range found {
+		out = append(out, c.path)
 	}
-	var found []candidate
+	return out
+}
+
+// claudeTranscriptCandidate is one in-window transcript with the size the walk
+// already stat'ed, so the poll can tell an idle file from a grown one without
+// opening it.
+type claudeTranscriptCandidate struct {
+	path    string
+	size    int64
+	modTime time.Time
+}
+
+// claudeTranscriptCandidates is candidateClaudeTranscripts with each file's
+// size kept. Same walk, same filter, same order.
+func claudeTranscriptCandidates(historyCutoff time.Time) []claudeTranscriptCandidate {
+	var found []claudeTranscriptCandidate
 	_ = filepath.Walk(ClaudeProjectsDir(), func(path string, info os.FileInfo, err error) error {
 		if err != nil || info.IsDir() {
 			return nil
@@ -1068,7 +1106,7 @@ func candidateClaudeTranscripts(historyCutoff time.Time) []string {
 		if info.ModTime().Before(historyCutoff) {
 			return nil
 		}
-		found = append(found, candidate{path: path, modTime: info.ModTime()})
+		found = append(found, claudeTranscriptCandidate{path: path, size: info.Size(), modTime: info.ModTime()})
 		return nil
 	})
 	// Path descending as the tie-break: mtime granularity can collide across
@@ -1080,11 +1118,7 @@ func candidateClaudeTranscripts(historyCutoff time.Time) []string {
 		}
 		return found[i].modTime.After(found[j].modTime)
 	})
-	out := make([]string, 0, len(found))
-	for _, c := range found {
-		out = append(out, c.path)
-	}
-	return out
+	return found
 }
 
 // isClaudeSidechainFile reports whether a transcript path is a subagent
