@@ -165,6 +165,17 @@ func TestSidecarWrittenAfterTheTranscriptStillLandsOnTheLane(t *testing.T) {
 	if err := os.WriteFile(meta, []byte(realSidecar), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	// And the lane writes again. An idle transcript is not reopened (see the
+	// idle skip in pollClaudeTranscripts), and the label is only read into an
+	// event built from new bytes, so new bytes are when the retry has to land.
+	f, err := os.OpenFile(transcript, os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.WriteString("{}\n"); err != nil {
+		t.Fatal(err)
+	}
+	_ = f.Close()
 
 	pollClaudeTranscripts(session, resolvePath(workspace), cutoff, processors, true, false)
 	if processors[key] != proc {
