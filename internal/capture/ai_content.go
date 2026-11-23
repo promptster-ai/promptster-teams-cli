@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/promptster-ai/promptster-teams-cli/internal/event"
+	"github.com/promptster-ai/promptster-teams-cli/internal/normalize"
 	"github.com/promptster-ai/promptster-teams-cli/internal/sign"
 	"github.com/promptster-ai/promptster-teams-cli/internal/state"
 )
@@ -109,12 +110,13 @@ func repoCommonDir(checkout string) (string, bool) {
 // carry) is skipped rather than guessed. Cursor stamps a whole turn with its
 // start, and its hook rail runs under a 2s budget.
 //
-// The bytes must be the edit's own result: a Write's file equals its content,
-// and every line an Edit's diff adds is in the file. A failed or denied edit (it
-// still reaches here as a likely_ai file_diff) fails that, as does a person's
-// save over it. The file must also have been written around the event (mtime
-// within [ev-aiContentWrittenBeforeMs, ev+aiContentMtimeSlackMs]) and not
-// changed while it was read.
+// The bytes must be the edit's own result: the tool did not report failure (a
+// failed or denied edit still reaches here as a likely_ai file_diff, marked
+// normalize.ToolFailedKey), a Write's file equals its content, and every line
+// an Edit's diff adds is in the file (a person's save over it fails that). The
+// file must also have been written around the event (mtime within
+// [ev-aiContentWrittenBeforeMs, ev+aiContentMtimeSlackMs]) and not changed
+// while it was read.
 func recordAiContentFromEvent(e *event.Event, replay bool) {
 	if replay || e == nil || e.Kind != "file_diff" || e.Provenance == nil || e.Provenance.Attribution != "likely_ai" {
 		return
@@ -141,7 +143,7 @@ func recordAiContentFromEvent(e *event.Event, replay bool) {
 	if err != nil || !after.ModTime().Equal(before.ModTime()) || after.Size() != int64(len(content)) {
 		return
 	}
-	if !aiEditLanded(data, content) {
+	if failed, _ := data[normalize.ToolFailedKey].(bool); failed || !aiEditLanded(data, content) {
 		return
 	}
 	recordAiContent(e.SessionID, abs, content, evMs)
