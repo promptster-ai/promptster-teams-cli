@@ -142,7 +142,7 @@ func editExtraClaudeConfigDirs(edit func([]string) []string) (changed bool, err 
 		// Read strictly: a file that exists but can't be parsed must not be
 		// overwritten by an edit, which would drop every root it held.
 		var f claudeExtraDirsFile
-		if data, err := os.ReadFile(path); err == nil {
+		if data, err := os.ReadFile(path); err == nil { // #nosec G304 -- path is claudeExtraDirsPath(), StateDir-derived, not user input.
 			if err := json.Unmarshal(data, &f); err != nil {
 				return fmt.Errorf("%s is unreadable (%v); fix or delete it first", path, err)
 			}
