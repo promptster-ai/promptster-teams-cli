@@ -244,7 +244,11 @@ func findClaudeBinary() string {
 // A failed ping isn't recorded, so the next tick retries while the cache lives.
 func keepaliveTick(clock func() time.Time, pinged map[string]time.Time, ping func(claudeLastTurn) (keepalivePing, error)) {
 	start := clock()
-	for _, path := range candidateClaudeTranscripts(start.Add(-(keepaliveCap + keepaliveTTL))) {
+	// Primary root only: pingClaudeSession resumes under the daemon's own
+	// account (no CLAUDE_CONFIG_DIR), so an extra root's session would ping the
+	// wrong account, fail, and be retried every tick (claude_extra_dirs.go).
+	for _, c := range claudeTranscriptCandidatesIn([]string{ClaudeProjectsDir()}, start.Add(-(keepaliveCap + keepaliveTTL))) {
+		path := c.path
 		if isClaudeSidechainFile(path) {
 			continue
 		}

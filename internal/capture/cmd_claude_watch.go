@@ -1121,12 +1121,18 @@ type claudeTranscriptCandidate struct {
 // claudeTranscriptCandidates is candidateClaudeTranscripts with each file's
 // size kept. Same walk, same filter, same order.
 func claudeTranscriptCandidates(historyCutoff time.Time) []claudeTranscriptCandidate {
-	var found []claudeTranscriptCandidate
 	// Every captured config root's store, primary first (claude_extra_dirs.go).
 	// One mtime sort below orders them together, so an extra root's backfill
 	// shares the per-poll budget instead of jumping the queue.
 	dirs := claudeProjectsDirs()
 	rememberWalkedExtraProjectsDirs(dirs[1:])
+	return claudeTranscriptCandidatesIn(dirs, historyCutoff)
+}
+
+// claudeTranscriptCandidatesIn walks just the given projects dirs, sorted as
+// claudeTranscriptCandidates sorts.
+func claudeTranscriptCandidatesIn(dirs []string, historyCutoff time.Time) []claudeTranscriptCandidate {
+	var found []claudeTranscriptCandidate
 	for _, dir := range dirs {
 		found = appendClaudeTranscriptCandidates(found, dir, historyCutoff)
 	}

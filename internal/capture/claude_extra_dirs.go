@@ -25,8 +25,9 @@ import (
 //
 // WHAT AN EXTRA ROOT FEEDS, deliberately: transcript capture (and with it the
 // AI-edit and bash-window ledgers commit attribution reads) plus the census
-// transcript counts. NOT the statusline shim, plan tier, usage-limit hits or
-// census repo discovery, which stay on the primary root (claudeConfigDir): a
+// transcript counts. NOT the statusline shim, plan tier, usage-limit hits,
+// census repo discovery or cache keepalive (which resumes sessions under the
+// daemon's own account), which stay on the primary root (claudeConfigDir): a
 // second account's plan and its 429s are that account's, and reporting them
 // as this engineer's would raise plan alerts about a subscription they do not
 // hold. Hooks are not installed there either, so while the watcher is
@@ -81,7 +82,7 @@ func claudeProjectsDirs() []string {
 // a fresh read of the file: a `claude-dirs remove` landing between a poll's
 // walk and its keying would otherwise give that poll's paths their absolute
 // path as a key, which has no offset, and the transcript would be read again
-// from byte 0. It only grows: several goroutines walk (the poll, keepalive,
+// from byte 0. It only grows: several goroutines walk (the poll,
 // reconstruction), and a later walk replacing the list could drop a root an
 // earlier walk's paths are still being keyed against. A removed root's keys
 // stay correct forever, since they are relative to that root's own dir.
