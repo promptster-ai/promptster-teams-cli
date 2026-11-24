@@ -187,6 +187,7 @@ the instance proved nothing.
 | `node scenarios/cursor-subagent-rollup/run.mjs` | real subagent capture replay; asserts roll-up, claim, no duplicate |
 | `node scenarios/codex-subagent-effort/run.mjs` | codex watcher over a parent + delegate rollout; asserts delegate effort survives projection |
 | `node scenarios/codex-fast-mode-plan/run.mjs` | codex watcher over a rollout that switches to fast mode; asserts serviceTier, fast-only token deltas, and planType on windowUsage |
+| `node scenarios/bash-window-command-start/run.mjs` | daemon over a Bash call that writes at its start and runs 90s; asserts the commit is credited to it and a human edit 10 min earlier is not (~3 min) |
 | `node evals/run-eval.mjs --agent claude` | score how well an agent catches planted defects |
 
 ## 7. Keeping this skill honest

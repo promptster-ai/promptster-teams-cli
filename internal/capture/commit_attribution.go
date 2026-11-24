@@ -323,8 +323,8 @@ func reconcileCommitAttribution(root string, scope ledgerScope, fileRanges map[s
 
 // δ/ε mtime-correlation tolerance for bash recovery (git-ai's ±3s, in ms). A file
 // mtime up to δ BEFORE a window's start or ε AFTER its end still matches — δ
-// covers the command's execution duration plus clock skew before its observed
-// END time (the only timestamp we have), ε covers the mtime landing slightly
+// covers clock skew before the recorded start (and, on a window that recorded
+// only its end, the command's own run), ε covers the mtime landing slightly
 // after that observed end. Package vars so a test can tighten them.
 var (
 	bashWindowPreToleranceMs  int64 = 3000 // δ
@@ -336,8 +336,10 @@ var (
 //
 // It stats the working-tree path (the committed content usually matches the
 // working tree at poll time); if the file is gone or unstattable it returns no
-// match — a conservative MISS, never a guess. Ties break to the NEAREST window,
-// then the newest, then the lexicographically smallest session for determinism.
+// match — a conservative MISS, never a guess. The TIGHTEST window wins: least
+// distance plus width, so a 2s `sed` (or an end-point window 40ms off) beats
+// another session's 5-minute test run that merely contains the mtime. Ties
+// break to the newest, then the lexicographically smallest session.
 //
 // KNOWN LIMIT (deliberate, documented): a later `git checkout` / `reset --hard` /
 // `stash` rewrites working-tree mtimes to the checkout instant, breaking the
@@ -357,19 +359,22 @@ func recoverBashSession(root, relPath string, windows []bashWindow) (string, boo
 	windows = eligibleBashWindows(root, windows)
 
 	best := ""
-	bestDist := int64(-1)
+	bestScore := int64(-1)
 	bestEnd := int64(0)
 	for _, w := range windows {
 		dist, ok := windowDistanceMs(mtimeMs, w)
 		if !ok {
 			continue // outside tolerance
 		}
-		if bestDist < 0 || dist < bestDist ||
-			(dist == bestDist && (w.EndMs > bestEnd || (w.EndMs == bestEnd && w.SessionID < best))) {
-			best, bestDist, bestEnd = w.SessionID, dist, w.EndMs
+		// How loosely this window pins the write: its distance plus its width. For
+		// end-point windows that is the distance alone, exactly as before spans.
+		score := dist + (w.EndMs - w.StartMs)
+		if bestScore < 0 || score < bestScore ||
+			(score == bestScore && (w.EndMs > bestEnd || (w.EndMs == bestEnd && w.SessionID < best))) {
+			best, bestScore, bestEnd = w.SessionID, score, w.EndMs
 		}
 	}
-	if bestDist < 0 {
+	if bestScore < 0 {
 		return "", false
 	}
 	return best, true

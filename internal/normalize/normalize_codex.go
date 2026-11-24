@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf16"
@@ -1256,6 +1257,7 @@ func (p *CodexRolloutProcessor) emitToolEvent(call codexPendingCall, callID, out
 		}
 		exitCode, stdout := parseCodexExecOutput(output)
 		e := p.newCodexEvent("command", ts, callID)
+		e.StartTs = codexRunStart(ts, output)
 		e.Provenance = event.AIProvenance()
 		e.Data = map[string]interface{}{
 			"command":  cmd,
@@ -1794,6 +1796,30 @@ func parseCodexArgs(payload map[string]interface{}) map[string]interface{} {
 }
 
 var codexExitCodeRe = regexp.MustCompile(`(?i)(?:exited with code|exit code:?)\s*(\d+)`)
+
+// codexWallTimeRe captures the run time codex reports for a command it ran
+// ("Wall time: 1.2345 seconds", "Wall time 0.2 seconds").
+var codexWallTimeRe = regexp.MustCompile(`(?m)^Wall time:? ([0-9]+(?:\.[0-9]+)?) seconds`)
+
+// codexRunStart is when a command started running: its output's timestamp less
+// the wall time codex reports. Not the call line's time, which precedes any
+// approval wait. A call that never ran (declined, aborted) reports no wall time
+// and gets no start; a detached call's is its last poll's, an under-count.
+func codexRunStart(endTs, output string) string {
+	if i := strings.Index(output, "Output:\n"); i >= 0 {
+		output = output[:i] // the header only: the command's own stdout can say anything
+	}
+	m := codexWallTimeRe.FindStringSubmatch(output)
+	end, err := time.Parse(time.RFC3339Nano, endTs)
+	if m == nil || err != nil {
+		return ""
+	}
+	secs, err := strconv.ParseFloat(m[1], 64)
+	if err != nil || secs < 0 {
+		return ""
+	}
+	return end.Add(-time.Duration(secs * float64(time.Second))).UTC().Format(time.RFC3339Nano)
+}
 
 // parseCodexExecOutput pulls an exit code and the trailing stdout out of codex's
 // exec output blob, which looks like:

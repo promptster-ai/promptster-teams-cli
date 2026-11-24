@@ -116,6 +116,10 @@ func TestCodexExecWrapperNormalization(t *testing.T) {
 	if command["command"] != "go test ./..." || command["exitCode"] != 0 {
 		t.Errorf("command data = %#v", command)
 	}
+	// The run started its reported wall time before its output landed.
+	if got := byKind["command"][0].StartTs; got != "2026-07-22T17:30:00.8Z" {
+		t.Errorf("command start = %q, want output time less the 0.2s wall time", got)
+	}
 	diff := byKind["file_diff"][0].Data.(map[string]interface{})
 	if diff["path"] != "src/a.go" || diff["linesAdded"] != 2 || diff["linesRemoved"] != 1 {
 		t.Errorf("file_diff data = %#v", diff)
@@ -979,5 +983,24 @@ func TestCodexAttachesEffortFromTurnContext(t *testing.T) {
 		if got[i] != want[i] {
 			t.Fatalf("turn %d effort = %v, want %v (all: %v)", i, got[i], want[i], got)
 		}
+	}
+}
+
+// A command codex never ran (declined at approval) reports no wall time, so it
+// gets no start: the approval wait is not its run.
+func TestCodexRunStart(t *testing.T) {
+	end := "2026-07-22T17:35:00Z"
+	cases := map[string]string{
+		"Chunk ID: a1\nWall time: 12.5 seconds\nProcess exited with code 0\nOutput:\nok\n": "2026-07-22T17:34:47.5Z",
+		"exec command rejected by user":   "",
+		"Output:\nWall time: 9 seconds\n": "", // printed by the command, not codex
+	}
+	for out, want := range cases {
+		if got := codexRunStart(end, out); got != want {
+			t.Errorf("codexRunStart(%q) = %q, want %q", out, got, want)
+		}
+	}
+	if got := codexRunStart("not a time", "Wall time: 1 seconds"); got != "" {
+		t.Errorf("unparseable end gave start %q", got)
 	}
 }
