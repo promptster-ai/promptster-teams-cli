@@ -85,6 +85,11 @@ type Event struct {
 	// Until then the backend cross-checks it against the pinned device pubkey
 	// rather than trusting it.
 	DeviceID string `json:"deviceId,omitempty"`
+	// StartTs is when a tool call STARTED (RFC3339Nano), where the transcript
+	// records it; Ts is when its result landed. Local-only (never serialized,
+	// never signed): capture reads it to record a command's whole execution
+	// window, so a file a long command writes at its start still correlates.
+	StartTs string `json:"-"`
 }
 
 // Provenance captures who authored a change and how confident we are.

@@ -341,12 +341,17 @@ func pruneAiPaths(ledger *aiPathsLedger, nowMs int64) {
 // TIMESTAMP MODEL (verified against the normalizers, not assumed): the `command`
 // event is built from the tool_result / function_call_output transcript line —
 // Claude's resolveToolResult and Codex's emitToolEvent both stamp the event's Ts
-// with that OUTPUT line's timestamp. The tool_use / function_call START line's
-// timestamp is NOT retained in the pending-call structs (claudePendingTool /
-// codexPendingCall carry name+input only). So only the command END time is
-// reliably available at the point a window is recorded. We therefore store the
-// window as the observed END point [end, end] and apply the δ/ε tolerance at
-// RECOVERY time (see commit_attribution.go) — modelling [end - δ, end + ε].
+// with that OUTPUT line's timestamp, and its local-only StartTs with when the
+// command began running: Claude's tool_use time where nobody is asked first
+// (auto mode) and the call ran, Codex's output time less its reported wall
+// time. The window is the whole run [start, end];
+// recovery widens it by the δ/ε tolerance (see commit_attribution.go). An agent
+// typically writes a file FIRST and then tests and commits in the same command
+// (`git apply x && make check && git commit`), so the file's mtime sits at the
+// command's start, a whole run before its end: recording the end alone missed
+// it, and the miss read as `bash_window_miss_late` against the PREVIOUS
+// command's end by the model's think time. Events without a start (hooks,
+// windows recorded before this) keep the end point [end, end].
 //
 // This ledger is modelled EXACTLY on the ai-paths ledger above: session-keyed,
 // same WithBufferLock discipline, the same 7-day aiPathsTTL prune, same
@@ -599,8 +604,9 @@ func pruneBashWindows(ledger *bashWindowsLedger, nowMs int64) {
 //   - non-command kinds (file edits already flow through the ai-paths ledger),
 //   - human/unknown provenance (ONLY AI bash is recorded — never misattribute).
 //
-// Only the command END time is observable (see the ledger header), so the stored
-// window is the point [endMs, endMs]; recovery widens it by ± the δ/ε tolerance.
+// The stored window is the command's run [start, end] when the event carries its
+// start, else the end point (see the ledger header); recovery widens it by ± the
+// δ/ε tolerance.
 // replay is declared by the caller, on the same terms as dedupeFileDiff's.
 func recordAiBashWindow(e *event.Event, taskRoot string, replay bool) {
 	if e == nil || (e.Kind != "command" && e.Kind != "prompt") {
@@ -658,9 +664,27 @@ func recordAiBashWindow(e *event.Event, taskRoot string, replay bool) {
 	if d, ok := e.Data.(map[string]interface{}); ok {
 		command, _ = d["command"].(string)
 	}
-	recordBashWindowAt(e.SessionID, rootKey, endMs, endMs, activityMs, func(workdir string) []string {
+	recordBashWindowAt(e.SessionID, rootKey, bashWindowStartMs(e.StartTs, endMs), endMs, activityMs, func(workdir string) []string {
 		return commandCheckouts(command, workdir, taskRoot)
 	})
+}
+
+// bashWindowMaxSpanMs bounds a command's recorded run. Every near miss this
+// fixes ran 0-188s (one device's misses since 2026-11-23, joined to its
+// transcripts); its Bash calls run <=11s at p90 and <=172s at p99. A longer span
+// is far more likely time spent somewhere other than writing this checkout, so
+// it is not trusted at all: the window falls back to the end point.
+const bashWindowMaxSpanMs int64 = 5 * 60 * 1000
+
+// bashWindowStartMs is when a command's window starts: its recorded start. No
+// start, an unparseable one, one after the end (clock skew), or a run longer
+// than bashWindowMaxSpanMs leaves the end point, as before starts were kept.
+func bashWindowStartMs(startTs string, endMs int64) int64 {
+	startMs, ok := eventTsMs(startTs)
+	if !ok || startMs > endMs || endMs-startMs > bashWindowMaxSpanMs {
+		return endMs
+	}
+	return startMs
 }
 
 // bashSegmentRe splits a command into the segments the shell runs in order.

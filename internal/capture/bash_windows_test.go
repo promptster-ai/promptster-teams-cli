@@ -155,8 +155,8 @@ func TestRecordAiBashWindowOnlyAICommands(t *testing.T) {
 	if !ok {
 		t.Fatalf("AI command window missing: %+v", got)
 	}
-	// Only the command END time is observable, so the stored window is the point
-	// [end, end]; tolerance is a recovery-time concern, not baked in here.
+	// An event with no recorded start stores the end point [end, end]; tolerance
+	// is a recovery-time concern, not baked in here.
 	if w.StartMs != endMs || w.EndMs != endMs {
 		t.Errorf("window = %d..%d, want observed end point %d..%d", w.StartMs, w.EndMs, endMs, endMs)
 	}

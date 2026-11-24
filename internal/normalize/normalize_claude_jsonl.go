@@ -47,6 +47,9 @@ import (
 type claudePendingTool struct {
 	name  string
 	input map[string]interface{}
+	// ts is the tool_use line's timestamp, kept only when the call runs as soon
+	// as it is made (see claudeRunsUnasked): then it is when the call started.
+	ts string
 }
 
 // claudeMsgAccum accumulates one assistant API message (one message.id) across
@@ -246,8 +249,11 @@ type ClaudeTranscriptProcessor struct {
 	// MAIN-LOOP model's window and a delegate may run a different model entirely.
 	ContextWindow ClaudeContextWindow
 	pendingTools  map[string]claudePendingTool
-	emittedMsgIDs map[string]bool
-	accum         *claudeMsgAccum
+	// permissionMode is the latest one a record named (prompts carry it): it
+	// says whether a tool call can sit waiting on a person before it runs.
+	permissionMode string
+	emittedMsgIDs  map[string]bool
+	accum          *claudeMsgAccum
 	// RewindOffset is CALLER-OWNED bookkeeping, stashed on the processor so it
 	// shares this processor's exact lifetime — same map, same eviction — instead
 	// of needing a parallel one in the watcher. The capture layer keeps in it the
@@ -407,6 +413,9 @@ func (p *ClaudeTranscriptProcessor) processLine(line []byte) []event.Event {
 	// session — which is what rolls that work up rather than fragmenting it.
 	if p.sessionID == "" {
 		p.sessionID = stringField(rec, "sessionId")
+	}
+	if m := stringField(rec, "permissionMode"); m != "" {
+		p.permissionMode = m
 	}
 	// Sidechain attribution hints are constant per file — pin the first value
 	// each of them shows up with.
@@ -655,7 +664,11 @@ func (p *ClaudeTranscriptProcessor) handleAssistant(rec map[string]interface{}, 
 				input = map[string]interface{}{}
 			}
 			if id != "" {
-				p.pendingTools[id] = claudePendingTool{name: stringField(block, "name"), input: input}
+				call := claudePendingTool{name: stringField(block, "name"), input: input}
+				if claudeRunsUnasked(p.permissionMode) {
+					call.ts = ts // the call runs as soon as it is made
+				}
+				p.pendingTools[id] = call
 			}
 			// This record contains a tool call, so an interrupt arriving next cut
 			// an ACTION. Record the tool NAME (never its input) so the interrupt
@@ -1192,6 +1205,11 @@ func (p *ClaudeTranscriptProcessor) resolveToolResult(rec map[string]interface{}
 	if t := parseCodexTs(ts); t != "" {
 		ev.Ts = t
 	}
+	// Only a call that RAN has a structured result: a rejected or denied one
+	// carries a bare string, and it has no run to start.
+	if _, ran := rec["toolUseResult"].(map[string]interface{}); ran {
+		ev.StartTs = parseCodexTs(call.ts)
+	}
 	if ev.Actor == nil {
 		ev.Actor = event.AIActor()
 	}
@@ -1201,6 +1219,14 @@ func (p *ClaudeTranscriptProcessor) resolveToolResult(rec map[string]interface{}
 		ev.Provenance.Methods = []string{"transcript-jsonl"}
 	}
 	return ev, true
+}
+
+// claudeRunsUnasked reports whether, in this permission mode, a tool call runs
+// the moment it is made: nobody is asked, so the tool_use time is the start of
+// its run. In any other mode (default, acceptEdits, plan, or none recorded) a
+// Bash call may wait on a person first, and that wait is not the command's.
+func claudeRunsUnasked(mode string) bool {
+	return mode == "auto" || mode == "bypassPermissions" || mode == "dontAsk"
 }
 
 // parseClaudeExitCode scans the textual fields of a transcript tool result for

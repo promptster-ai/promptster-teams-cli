@@ -463,6 +463,46 @@ func TestClaudeTranscriptCompactBoundary(t *testing.T) {
 	}
 }
 
+// A Bash call's run starts at its tool_use only where nobody is asked first
+// (auto mode); otherwise, or when it was rejected and never ran, it keeps no
+// start: the time it waited on a person is not its run.
+func TestClaudeBashStartNeedsAnUnaskedRun(t *testing.T) {
+	cases := []struct {
+		name, mode, result, want string
+	}{
+		{"auto, ran", "auto", `{"stdout":"ok\n","stderr":"","interrupted":false}`, "2026-06-10T10:00:05Z"},
+		{"default mode may wait on a person", "default", `{"stdout":"ok\n","stderr":"","interrupted":false}`, ""},
+		{"no mode recorded", "", `{"stdout":"ok\n","stderr":"","interrupted":false}`, ""},
+		{"auto, denied", "auto", `"User rejected tool use"`, ""},
+	}
+	for _, c := range cases {
+		p := NewClaudeTranscriptProcessor("sess-start")
+		mode := ""
+		if c.mode != "" {
+			mode = `,"permissionMode":"` + c.mode + `"`
+		}
+		processNoFlush(t, p,
+			`{"type":"user","message":{"role":"user","content":"run it"},"timestamp":"2026-06-10T10:00:00Z","cwd":"/tmp/ws","sessionId":"sess-start"`+mode+`}`,
+			`{"type":"assistant","message":{"id":"msg-r","model":"claude-sonnet-4-6","content":[{"type":"tool_use","id":"toolu_r","name":"Bash","input":{"command":"make check"}}],"usage":{"input_tokens":1,"output_tokens":1}},"timestamp":"2026-06-10T10:00:05Z"}`,
+		)
+		events := processAll(t, p,
+			`{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_r","content":"x"}]},"toolUseResult":`+c.result+`,"timestamp":"2026-06-10T10:01:05Z"}`,
+		)
+		commands := 0
+		for _, e := range events {
+			if e.Kind == "command" {
+				commands++
+				if e.StartTs != c.want {
+					t.Errorf("%s: start = %q, want %q", c.name, e.StartTs, c.want)
+				}
+			}
+		}
+		if commands != 1 {
+			t.Errorf("%s: want one command event, got %d", c.name, commands)
+		}
+	}
+}
+
 func TestClaudeTranscriptAssistantAccumulation(t *testing.T) {
 	p := NewClaudeTranscriptProcessor("sess-1")
 	// One API message split across two lines (text + tool_use), same id and
