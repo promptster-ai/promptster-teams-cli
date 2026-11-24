@@ -6,7 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
-	"sync/atomic"
+	"sync"
 
 	"github.com/promptster-ai/promptster-teams-cli/internal/sign"
 	"github.com/promptster-ai/promptster-teams-cli/internal/state"
@@ -76,21 +76,42 @@ func claudeProjectsDirs() []string {
 	return out
 }
 
-// walkedExtra holds the extra projects dirs the latest transcript walk used.
-// claudeProgressKey keys an extra root's path against THIS list, not a fresh
-// read of the file: a `claude-dirs remove` landing between a poll's walk and
-// its keying would otherwise give that poll's paths their absolute path as a
-// key, which has no offset, and the transcript would be read again from byte 0.
-var walkedExtra atomic.Pointer[[]string]
+// walkedExtra holds every extra projects dir a transcript walk in this process
+// has used. claudeProgressKey keys an extra root's path against THIS list, not
+// a fresh read of the file: a `claude-dirs remove` landing between a poll's
+// walk and its keying would otherwise give that poll's paths their absolute
+// path as a key, which has no offset, and the transcript would be read again
+// from byte 0. It only grows: several goroutines walk (the poll, keepalive,
+// reconstruction), and a later walk replacing the list could drop a root an
+// earlier walk's paths are still being keyed against. A removed root's keys
+// stay correct forever, since they are relative to that root's own dir.
+var (
+	walkedExtraMu sync.Mutex
+	walkedExtra   []string
+	walkedAny     bool
+)
 
-func rememberWalkedExtraProjectsDirs(dirs []string) { walkedExtra.Store(&dirs) }
-
-// walkedExtraProjectsDirs is the list the last walk used, or the registered
-// one when this process has not walked yet.
-func walkedExtraProjectsDirs() []string {
-	if p := walkedExtra.Load(); p != nil {
-		return *p
+func rememberWalkedExtraProjectsDirs(dirs []string) {
+	walkedExtraMu.Lock()
+	defer walkedExtraMu.Unlock()
+	walkedAny = true
+	for _, d := range dirs {
+		if !slices.Contains(walkedExtra, d) {
+			walkedExtra = append(walkedExtra, d)
+		}
 	}
+}
+
+// walkedExtraProjectsDirs is every list a walk used, or the registered one
+// when this process has not walked yet.
+func walkedExtraProjectsDirs() []string {
+	walkedExtraMu.Lock()
+	if walkedAny {
+		out := slices.Clone(walkedExtra)
+		walkedExtraMu.Unlock()
+		return out
+	}
+	walkedExtraMu.Unlock()
 	return claudeProjectsDirs()[1:]
 }
 

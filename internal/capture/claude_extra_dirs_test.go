@@ -143,3 +143,18 @@ func TestFastForwardSkipsExtraClaudeRoots(t *testing.T) {
 		t.Errorf("extra root offset = %d, want untouched", off)
 	}
 }
+
+// A later walk with a shorter list (a concurrent walk after `claude-dirs
+// remove`) must not drop a root an earlier walk's paths are still keyed under.
+func TestWalkedExtraProjectsDirsOnlyGrow(t *testing.T) {
+	a, b := filepath.Join(t.TempDir(), "a"), filepath.Join(t.TempDir(), "b")
+	rememberWalkedExtraProjectsDirs([]string{a, b})
+	rememberWalkedExtraProjectsDirs([]string{b})
+	got := walkedExtraProjectsDirs()
+	if !slices.Contains(got, a) || !slices.Contains(got, b) {
+		t.Fatalf("walked dirs = %v, want both %s and %s", got, a, b)
+	}
+	if key := claudeProgressKey(filepath.Join(a, "slug", "s.jsonl")); key != "s.jsonl" {
+		t.Fatalf("key = %q, want s.jsonl", key)
+	}
+}
