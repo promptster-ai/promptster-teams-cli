@@ -32,6 +32,9 @@ func TestMain(m *testing.M) {
 	// user.email, and a global one would make every fixture commit "foreign".
 	_ = os.Setenv("GIT_CONFIG_GLOBAL", filepath.Join(dir, "absent-gitconfig"))
 	_ = os.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+	// Nor the developer's state dir: an extra Claude config root registered
+	// there (claude-dirs add) would put their real transcripts in every walk.
+	_ = os.Setenv("PROMPTSTER_STATE_DIR", filepath.Join(dir, "state"))
 	cursorProcessArgs = func() []string { return nil } // never the developer's running Cursor
 	// Nor the developer's keychain: no test may raise a real macOS prompt.
 	cursorSecurityBin = filepath.Join(dir, "absent-security")

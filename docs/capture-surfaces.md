@@ -7,7 +7,10 @@ Three watchers poll the filesystem every 3s:
 
 - **Claude Code** — `internal/capture/cmd_claude_watch.go`. Tails
   `$CLAUDE_CONFIG_DIR/projects/<munged-cwd>/<session-uuid>.jsonl`
-  (default `~/.claude/projects`, `claudeConfigDir()`/`ClaudeProjectsDir()`).
+  (default `~/.claude/projects`, `claudeConfigDir()`/`ClaudeProjectsDir()`),
+  plus the `projects/` of each extra config root registered with
+  `promptster-teams claude-dirs add <dir>` (a second account's
+  `CLAUDE_CONFIG_DIR`; `claude_extra_dirs.go` lists what those roots feed).
 - **Codex** — `internal/capture/cmd_codex_watch.go`. Tails
   `$CODEX_HOME/sessions/YYYY/MM/DD/rollout-*.jsonl` (default `~/.codex`).
 - **Cursor** — `internal/capture/cmd_cursor_watch.go`. Tails

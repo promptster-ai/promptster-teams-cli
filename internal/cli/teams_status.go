@@ -144,11 +144,7 @@ func cmdTeamsDoctor() {
 	}
 	printlnIndent(fmt.Sprintf("%s installation health id: %s", okGlyph, capture.DeviceID()))
 
-	if _, err := os.Stat(capture.ClaudeProjectsDir()); err == nil {
-		printlnIndent(fmt.Sprintf("%s Claude Code transcripts: %s", okGlyph, capture.ClaudeProjectsDir()))
-	} else {
-		printlnIndent(fmt.Sprintf("%s Claude Code transcript dir not found yet: %s", warnGlyph, capture.ClaudeProjectsDir()))
-	}
+	printClaudeTranscriptRoots()
 
 	printlnIndent(fmt.Sprintf("%s presence heartbeat every %s while watching — device + tools only, no identity/email", okGlyph, humanInterval(capture.PresenceHeartbeatInterval)))
 
