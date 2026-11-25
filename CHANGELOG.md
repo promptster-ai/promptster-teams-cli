@@ -32,8 +32,12 @@ its changes, listed under 0.44.0 below.
   file's mtime sat a whole run earlier and read as `bash_window_miss_early`, or
   as `bash_window_miss_late` against the previous command. The window now spans
   the command's actual run (from when it started running, not counting a
-  permission prompt; capped at 5 minutes). The ±3s tolerance is unchanged, and
-  nothing new is sent.
+  permission prompt). Limits: Claude Code commands get the span only in
+  `auto`, `bypassPermissions` or `dontAsk` mode (in other modes the start time
+  could include a permission wait, so they keep the result-time window), and a
+  command that ran longer than 5 minutes falls back to the result-time window
+  instead of a capped span. The ±3s tolerance is unchanged, and nothing new is
+  sent.
 
 ## [0.44.0] — 2026-11-23
 
