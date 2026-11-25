@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"runtime"
+	"slices"
 	"time"
 
 	"github.com/promptster-ai/promptster-teams-cli/internal/event"
@@ -236,7 +237,7 @@ type presenceData struct {
 // once — which is what `watch` actually tails.
 func watchedTools() []string {
 	tools := []string{}
-	if dirExists(ClaudeProjectsDir()) {
+	if slices.ContainsFunc(claudeProjectsDirs(), dirExists) { // primary or a `claude-dirs add` root
 		tools = append(tools, "claude-code")
 	}
 	if dirExists(codexSessionsDir()) {

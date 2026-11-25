@@ -19,6 +19,16 @@ Cursor transcripts, normalizing, redacting on-device, signing, and shipping.
   holder's lock is released by the kernel, so it cannot report a phantom.
 - `PROMPTSTER_DEBUG=1` before `watch`/`start` turns on per-event logging.
 
+- `claude-dirs add <dir>` / `remove <dir>` / `list` — extra Claude config
+  roots (a second account's `CLAUDE_CONFIG_DIR`) whose `projects/` the daemon
+  also tails, picked up on the next poll without a restart. Saved in
+  `.promptster-teams/claude-config-dirs.json`. `add` refuses a missing dir
+  (exit 1); adding the primary root is accepted and never walked twice. Every listing prints
+  `✓ Claude Code transcripts (extra): <dir>/projects`, and so does `doctor`.
+  Proof: `node scenarios/claude-extra-config-dir/run.mjs` (not captured before
+  `add`, captured after, and a commit of the file it wrote in a `$TMPDIR`
+  worktree attributes `likely_ai` to that session).
+
 ## How to get to it (user POV)
 
 Almost never directly — `login` starts capture for you. `stop` is the one an

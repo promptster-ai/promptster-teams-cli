@@ -812,14 +812,15 @@ func buildConfigCensus(env censusEnv) configCensusData {
 }
 
 // countClaudeTranscripts tallies Claude Code transcript JSONL files under
-// ClaudeProjectsDir(): total, and how many were modified within the last 7
-// days. It is deliberately content-free — it STATS files (never opens them)
+// every captured config root's projects dir (claudeProjectsDirs: the primary
+// plus any `claude-dirs add` root, so the census counts what capture reads):
+// total, and how many were modified within the last 7 days. It is deliberately content-free — it STATS files (never opens them)
 // and returns only two integers, so no path, filename, or repo slug can leak.
 // A missing projects dir yields (0, 0). Mirrors candidateClaudeTranscripts'
 // walk shape (recursive; subagent sidechain files under <session>/subagents/
 // are counted — they are real transcript files on disk).
 func countClaudeTranscripts() (total *int, active7d *int) {
-	return countTranscripts([]string{ClaudeProjectsDir()}, func(path string) bool {
+	return countTranscripts(claudeProjectsDirs(), func(path string) bool {
 		return strings.HasSuffix(filepath.Base(path), ".jsonl")
 	}, nil)
 }

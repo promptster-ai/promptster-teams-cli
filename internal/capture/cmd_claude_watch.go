@@ -216,21 +216,44 @@ func claudeWatchProgressPath() string {
 // stripping the <ClaudeProjectsDir()>/<project-slug>/ prefix. A path outside
 // the projects dir (or with no slug component) has no such identity and falls
 // back to itself, which is no worse than the old behavior.
+//
+// An extra config root's transcript (see claude_extra_dirs.go) is keyed the
+// same way, relative to ITS projects dir. Session UUIDs are unique across
+// accounts, so the keys cannot collide with the primary root's, and the
+// primary is tried first without reading the extra-roots file, so every key
+// an earlier build wrote is unchanged.
 func claudeProgressKey(path string) string {
-	rel, err := filepath.Rel(ClaudeProjectsDir(), path)
+	if key, ok := claudeKeyUnder(ClaudeProjectsDir(), path); ok {
+		return key
+	}
+	if !filepath.IsAbs(path) {
+		return path // already a key (the migration re-keys every entry)
+	}
+	for _, dir := range walkedExtraProjectsDirs() {
+		if key, ok := claudeKeyUnder(dir, path); ok {
+			return key
+		}
+	}
+	return path
+}
+
+// claudeKeyUnder strips <projectsDir>/<project-slug>/ from path, or ok=false
+// when path is not under projectsDir.
+func claudeKeyUnder(projectsDir, path string) (string, bool) {
+	rel, err := filepath.Rel(projectsDir, path)
 	if err != nil {
-		return path
+		return path, false
 	}
 	slashed := filepath.ToSlash(rel)
 	if slashed == ".." || strings.HasPrefix(slashed, "../") {
-		return path // not under the projects dir
+		return path, false // not under the projects dir
 	}
 	// rel is "<slug>/<rest>"; drop the slug — that is the whole point.
 	parts := strings.SplitN(slashed, "/", 2)
 	if len(parts) < 2 {
-		return path // bare file directly in the projects dir: no slug to strip
+		return path, true // bare file directly in the projects dir: no slug to strip
 	}
-	return parts[1]
+	return parts[1], true
 }
 
 // migrateClaudeProgressKeys re-keys a progress file written by a build that
@@ -645,7 +668,7 @@ func RunClaudeWatcher() error {
 
 	if verboseWatch() {
 		fmt.Fprintf(os.Stderr, "claude-watcher: started, polling %s every %s (workspace=%s)\n",
-			ClaudeProjectsDir(), claudeWatchInterval, workspace)
+			strings.Join(claudeProjectsDirs(), ", "), claudeWatchInterval, workspace)
 	}
 
 	for {
@@ -1098,8 +1121,36 @@ type claudeTranscriptCandidate struct {
 // claudeTranscriptCandidates is candidateClaudeTranscripts with each file's
 // size kept. Same walk, same filter, same order.
 func claudeTranscriptCandidates(historyCutoff time.Time) []claudeTranscriptCandidate {
+	// Every captured config root's store, primary first (claude_extra_dirs.go).
+	// One mtime sort below orders them together, so an extra root's backfill
+	// shares the per-poll budget instead of jumping the queue.
+	dirs := claudeProjectsDirs()
+	rememberWalkedExtraProjectsDirs(dirs[1:])
+	return claudeTranscriptCandidatesIn(dirs, historyCutoff)
+}
+
+// claudeTranscriptCandidatesIn walks just the given projects dirs, sorted as
+// claudeTranscriptCandidates sorts.
+func claudeTranscriptCandidatesIn(dirs []string, historyCutoff time.Time) []claudeTranscriptCandidate {
 	var found []claudeTranscriptCandidate
-	_ = filepath.Walk(ClaudeProjectsDir(), func(path string, info os.FileInfo, err error) error {
+	for _, dir := range dirs {
+		found = appendClaudeTranscriptCandidates(found, dir, historyCutoff)
+	}
+	// Path descending as the tie-break: mtime granularity can collide across
+	// files written in the same instant, and an unstable order would make the
+	// per-poll budget fall on a different transcript each poll.
+	sort.Slice(found, func(i, j int) bool {
+		if found[i].modTime.Equal(found[j].modTime) {
+			return found[i].path > found[j].path
+		}
+		return found[i].modTime.After(found[j].modTime)
+	})
+	return found
+}
+
+// appendClaudeTranscriptCandidates walks one projects dir.
+func appendClaudeTranscriptCandidates(found []claudeTranscriptCandidate, dir string, historyCutoff time.Time) []claudeTranscriptCandidate {
+	_ = filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
 		if err != nil || info.IsDir() {
 			return nil
 		}
@@ -1119,15 +1170,6 @@ func claudeTranscriptCandidates(historyCutoff time.Time) []claudeTranscriptCandi
 		}
 		found = append(found, claudeTranscriptCandidate{path: path, size: size, modTime: info.ModTime()})
 		return nil
-	})
-	// Path descending as the tie-break: mtime granularity can collide across
-	// files written in the same instant, and an unstable order would make the
-	// per-poll budget fall on a different transcript each poll.
-	sort.Slice(found, func(i, j int) bool {
-		if found[i].modTime.Equal(found[j].modTime) {
-			return found[i].path > found[j].path
-		}
-		return found[i].modTime.After(found[j].modTime)
 	})
 	return found
 }
@@ -1654,10 +1696,17 @@ func classifyClaudeTranscriptBounded(
 // fastForwardClaudeTranscripts sets every currently-matched transcript's
 // offset to its current size, so tailing resumes at content written from now
 // on. Used after a hook-takeover window.
+//
+// Primary root only: hooks are installed there and nowhere else, so an extra
+// config root's lines from that window were emitted by nobody and must still
+// be read (claude_extra_dirs.go).
 func fastForwardClaudeTranscripts(workspace string, historyCutoff time.Time) {
 	progress := loadClaudeWatchProgress()
 	roots := transcriptMatchRoots(workspace)
 	for _, path := range candidateClaudeTranscripts(historyCutoff) {
+		if _, primary := claudeKeyUnder(ClaudeProjectsDir(), path); !primary {
+			continue
+		}
 		key := claudeProgressKey(path)
 		if progress.Match[key] == "no" {
 			continue

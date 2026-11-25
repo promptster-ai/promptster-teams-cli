@@ -90,6 +90,10 @@ func Main(argv []string) int {
 		// tick (reads stdin, spools the window reading, passes the prior line
 		// through); `status` reports the effective-statusline drift check.
 		return cmdStatusline(argv[2:])
+	case "claude-dirs":
+		// Opt-in: also capture transcripts from another Claude config root (a
+		// second account's CLAUDE_CONFIG_DIR). capture/claude_extra_dirs.go.
+		return cmdClaudeDirs(argv[2:])
 	case "keepalive":
 		// Opt-in: keep idle Claude sessions' prompt cache warm so a resume reads
 		// it instead of rebuilding it (capture/cache_keepalive.go).
@@ -138,6 +142,7 @@ Commands:
   autostart    Keep capture alive across reboots (enable|disable|status|repair) — starts at login
   statusline   Track your Claude 5h/weekly usage via the statusline (enable|disable|status)
   blame-backfill  Trace replaced lines in local Git history (--repo, --limit, --dry-run)
+  claude-dirs  Also capture another Claude config dir, e.g. a second account's CLAUDE_CONFIG_DIR (list|add <dir>|remove <dir>)
   keepalive    Keep idle Claude sessions' prompt cache warm so resuming doesn't rebuild it (enable|disable|status)
   watch        Foreground capture — tail Claude Code + Codex + Cursor transcripts, redact on-device, ship to your team's backend (Ctrl-C to stop)
   update       Install a newer signed release, or set how this machine updates (--check|--ask-each|--enable-auto|--disable-auto)
